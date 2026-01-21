@@ -1,6 +1,6 @@
--- position_calculator.lua - Optimized for SrBin OS Browser output
--- scripta treba x nested pozicioniranje
-print("=== LUA POSITION CALCULATOR (OPTIMIZED) ===")
+-- position_calculator.lua - FIXED VERSION with hierarchical positioning
+-- Fixed nested element X positioning and container awareness
+print("=== LUA POSITION CALCULATOR (FIXED HIERARCHICAL) ===")
 
 local M = {}
 
@@ -10,7 +10,9 @@ M.config = {
     default_font_size = 16,
     line_height_multiplier = 1.2,
     margin_between_elements = 15,
-    padding_inside_elements = 8
+    padding_inside_elements = 8,
+    container_indent = 40,
+    regular_indent = 20
 }
 
 -- Simple JSON tokenizer for your specific format
@@ -225,20 +227,32 @@ function extract_all_elements(json_str)
             end
         end
         
-        -- Create element record
+        -- Extract parent info (NEW - check if element has parent)
+        local parent_info = ""
+        local parent_pattern = '"parent"[%s%c]*:[%s%c]*"([^"]*)"'
+        local parent_start = context:find(parent_pattern)
+        if parent_start then
+            local parent_match = context:match(parent_pattern)
+            if parent_match then
+                parent_info = parent_match
+            end
+        end
+        
+        -- Create element record with parent info
         element_count = element_count + 1
         elements[element_count] = {
             tag = tag_value,
             id = id_value,
             type = type_value,
             text = text_value,
+            parent = parent_info,
             original_position = tag_start
         }
         
         -- Debug output for first 20 elements
         if element_count <= 20 then
-            print(string.format("[LUA] Found: <%s> id='%s' type='%s'", 
-                  tag_value, id_value, type_value))
+            print(string.format("[LUA] Found: <%s> id='%s' type='%s' parent='%s'", 
+                  tag_value, id_value, type_value, parent_info))
             if text_value ~= "" and #text_value > 0 then
                 print(string.format("       Text: '%s'", text_value:sub(1, 40) .. (#text_value > 40 and "..." or "")))
             end
@@ -329,7 +343,12 @@ function calculate_dimensions(element)
         height = 20
     
     -- Semantic
+    elseif tag == "header" then width = 760; height = 80
     elseif tag == "footer" then width = 760; height = 50
+    elseif tag == "nav" then width = 760; height = 60
+    elseif tag == "main" then width = 760; height = 200
+    elseif tag == "section" then width = 760; height = 150
+    elseif tag == "article" then width = 760; height = 180
     
     -- Inline elements
     elseif type == "inline" then
@@ -346,10 +365,38 @@ function calculate_dimensions(element)
     return math.floor(width), math.floor(height)
 end
 
+-- NEW: Check if element is likely inside a container
+function is_inside_container(element, all_elements)
+    if element.parent and element.parent ~= "" then
+        return true
+    end
+    
+    -- Heuristic: if previous element is a container tag
+    for _, elem in ipairs(all_elements) do
+        if elem.original_position and element.original_position and
+           elem.original_position < element.original_position and
+           (elem.tag == "div" or elem.tag == "section" or elem.tag == "article" or 
+            elem.tag == "header" or elem.tag == "footer" or elem.tag == "main") then
+            return true
+        end
+    end
+    
+    return false
+end
+
+-- NEW: Check if element is a container itself
+function is_container_element(element)
+    return element.tag == "table" or element.tag == "form" or 
+           element.tag == "ul" or element.tag == "ol" or 
+           element.tag == "menu" or element.tag == "div" or
+           element.tag == "section" or element.tag == "article" or
+           element.tag == "header" or element.tag == "footer" or
+           element.tag == "main" or element.tag == "nav"
+end
+
 -- ========== FIXED MAIN FUNCTION ==========
--- This is where the overlap was happening!
 function M.calculate_positions(json_str)
-    print("[LUA] Starting position calculation...")
+    print("[LUA] Starting FIXED hierarchical position calculation...")
     print("[LUA] JSON length: " .. #json_str .. " bytes")
     
     -- Extract all elements
@@ -365,51 +412,101 @@ function M.calculate_positions(json_str)
 }]]
     end
     
-    -- ========== FIXED: CUMULATIVE Y POSITIONING ==========
+    -- Group elements by likely hierarchy
     local positioned_elements = {}
-    local current_y = 20  -- Start Y position
+    local current_y = 20
     local margin = M.config.margin_between_elements
     
-    print("[LUA] Calculating positions with cumulative Y values...")
+    -- Track current container depth
+    local current_indent = M.config.regular_indent
+    local in_container = false
+    local container_start_y = 0
+    local container_height = 0
+    
+    print("[LUA] Calculating positions with hierarchy awareness...")
     
     for i, element in ipairs(all_elements) do
         local width, height = calculate_dimensions(element)
         
-        -- Special handling for body (always at 0,0)
-        if element.tag == "body" then
+        -- Check if this element starts a new container
+        if is_container_element(element) then
+            if in_container then
+                -- Close previous container
+                current_y = container_start_y + container_height + margin
+            end
+            
+            in_container = true
+            container_start_y = current_y
+            container_height = height
+            current_indent = M.config.container_indent
+            
+            -- Special handling for body (always at 0,0)
+            if element.tag == "body" then
+                positioned_elements[i] = {
+                    tag = element.tag,
+                    id = element.id,
+                    type = element.type,
+                    x = 0,
+                    y = 0,
+                    calculated_width = width,
+                    calculated_height = height,
+                    is_container = true
+                }
+                print(string.format("[LUA] Body at (0, 0) %dx%d", width, height))
+            else
+                positioned_elements[i] = {
+                    tag = element.tag,
+                    id = element.id,
+                    type = element.type,
+                    x = current_indent,
+                    y = current_y,
+                    calculated_width = width,
+                    calculated_height = height,
+                    is_container = true
+                }
+                
+                current_y = current_y + height + margin
+            end
+            
+        -- Elements likely inside containers get more indent
+        elseif is_inside_container(element, all_elements) then
             positioned_elements[i] = {
                 tag = element.tag,
                 id = element.id,
                 type = element.type,
-                x = 0,
-                y = 0,
+                x = current_indent + 20, -- Extra indent for nested
+                y = current_y,
                 calculated_width = width,
-                calculated_height = height
+                calculated_height = height,
+                is_nested = true
             }
-            print(string.format("[LUA] Body at (0, 0) %dx%d", width, height))
+            
+            current_y = current_y + height + margin
+            
+        -- Regular elements
         else
-            -- All other elements: stack vertically
             positioned_elements[i] = {
                 tag = element.tag,
                 id = element.id,
                 type = element.type,
-                x = 20,
+                x = current_indent,
                 y = current_y,
                 calculated_width = width,
                 calculated_height = height
             }
             
-            -- Debug output for first 15 elements
-            if i <= 15 then
-                print(string.format("[LUA] %3d. %-10s%s y=%-4d + h=%-3d → next y=%d",
-                      i, "<" .. element.tag .. ">", 
-                      element.id ~= "" and " #" .. element.id or "",
-                      current_y, height, 
-                      current_y + height + margin))
-            end
-            
-            -- CRITICAL: Update Y position for NEXT element
             current_y = current_y + height + margin
+        end
+        
+        -- Debug output for first 25 elements
+        if i <= 25 then
+            local indent_str = positioned_elements[i].is_nested and " (nested)" or 
+                              positioned_elements[i].is_container and " (container)" or ""
+            print(string.format("[LUA] %3d. %-10s%s x=%-4d y=%-4d %dx%d%s",
+                  i, "<" .. element.tag .. ">", 
+                  element.id ~= "" and " #" .. element.id or "",
+                  positioned_elements[i].x, positioned_elements[i].y,
+                  width, height, indent_str))
         end
     end
     
@@ -426,48 +523,26 @@ function M.calculate_positions(json_str)
             "type": "%s",
             "x": %d,
             "y": %d,
-            "calculated_width": %d,
-            "calculated_height": %d
+            "width": %d,
+            "height": %d
         }]], 
-        elem.tag, elem.id, elem.type, elem.x, elem.y, 
-        elem.calculated_width, elem.calculated_height))
+        elem.tag, elem.id or "", elem.type or "block", 
+        elem.x, elem.y, elem.calculated_width, elem.calculated_height))
     end
     
     local result = string.format([[
 {
     "success": true,
-    "message": "Calculated NON-OVERLAPPING positions for %d elements",
-    "document_width": %d,
-    "document_height": %d,
+    "message": "Positions calculated with hierarchy",
     "element_count": %d,
-    "elements": [%s]
-}]],
-    #positioned_elements,
-    M.config.viewport_width,
-    M.config.viewport_height,
-    #positioned_elements,
-    table.concat(elements_json, ",\n"))
+    "elements": [
+        %s
+    ]
+}
+]], #positioned_elements, table.concat(elements_json, ",\n"))
     
-    print(string.format("[LUA] Calculation complete. Generated %d NON-OVERLAPPING positions.", #positioned_elements))
     return result
 end
 
--- Test function (returns simple table, not JSON)
-function M.test_calculation()
-    print("[LUA] Running test calculation...")
-    
-    -- Create a simple test result as Lua table
-    local result = {
-        test_success = true,
-        test_message = "Test completed successfully",
-        document_height = 600,
-        element_count = 3
-    }
-    
-    print("[LUA] Test calculation completed")
-    return result
-end
-
-print("=== LUA POSITION CALCULATOR READY (WITH FIXED POSITIONING) ===")
-print("This version ensures NO element overlap with cumulative Y positioning")
+-- Export module
 return M
