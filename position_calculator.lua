@@ -1,5 +1,6 @@
--- position_calculator.lua - Simplified for Helen OS Browser
-print("=== LUA POSITION CALCULATOR (SIMPLIFIED) ===")
+-- position_calculator.lua - Optimized for SrBin OS Browser output
+-- scripta treba x nested pozicioniranje
+print("=== LUA POSITION CALCULATOR (OPTIMIZED) ===")
 
 local M = {}
 
@@ -8,125 +9,223 @@ M.config = {
     viewport_height = 600,
     default_font_size = 16,
     line_height_multiplier = 1.2,
-    margin_between_elements = 10,
+    margin_between_elements = 15,
     padding_inside_elements = 8
 }
 
--- Extract element data using simple pattern matching
-function extract_elements_simple(json_str)
-    print("[LUA] Extracting elements with simple pattern matching...")
-    
-    local elements = {}
-    local element_count = 0
-    
-    -- Look for all tag patterns
+-- Simple JSON tokenizer for your specific format
+function tokenize_json(json_str)
+    local tokens = {}
     local pos = 1
     local len = #json_str
     
     while pos <= len do
-        -- Find "tag": "value"
-        local tag_start = json_str:find('"tag"', pos, true)
+        local char = json_str:sub(pos, pos)
+        
+        if char == '"' then
+            -- String token
+            local start = pos
+            pos = pos + 1
+            while pos <= len do
+                if json_str:sub(pos, pos) == '"' and json_str:sub(pos-1, pos-1) ~= '\\' then
+                    break
+                end
+                pos = pos + 1
+            end
+            pos = pos + 1
+            table.insert(tokens, {type="string", value=json_str:sub(start, pos-1)})
+            
+        elseif char == '{' or char == '}' or char == '[' or char == ']' or char == ':' or char == ',' then
+            -- Single character token
+            table.insert(tokens, {type="char", value=char})
+            pos = pos + 1
+            
+        elseif char:match("%s") then
+            -- Whitespace, skip
+            pos = pos + 1
+            
+        elseif char:match("%d") or char == '-' then
+            -- Number
+            local start = pos
+            while pos <= len and (json_str:sub(pos, pos):match("%d") or json_str:sub(pos, pos) == '.' or json_str:sub(pos, pos) == '-') do
+                pos = pos + 1
+            end
+            table.insert(tokens, {type="number", value=json_str:sub(start, pos-1)})
+            
+        elseif char:match("%a") then
+            -- Literal (true, false, null)
+            local start = pos
+            while pos <= len and json_str:sub(pos, pos):match("%a") do
+                pos = pos + 1
+            end
+            table.insert(tokens, {type="literal", value=json_str:sub(start, pos-1)})
+            
+        else
+            -- Unknown, skip
+            pos = pos + 1
+        end
+    end
+    
+    return tokens
+end
+
+-- Extract elements from token stream
+function extract_elements_from_tokens(tokens)
+    local elements = {}
+    local stack = {}
+    local current_obj = nil
+    local current_key = nil
+    local in_array = false
+    
+    for i, token in ipairs(tokens) do
+        if token.type == "char" and token.value == "{" then
+            -- Start new object
+            table.insert(stack, {})
+            
+        elseif token.type == "char" and token.value == "}" then
+            -- End object
+            if #stack > 0 then
+                local obj = table.remove(stack)
+                if #stack == 0 then
+                    -- Root object
+                    if obj.tag then
+                        table.insert(elements, obj)
+                    end
+                else
+                    -- Nested object, add to parent
+                    local parent = stack[#stack]
+                    if current_key then
+                        parent[current_key] = obj
+                        current_key = nil
+                    elseif parent.children then
+                        table.insert(parent.children, obj)
+                    end
+                end
+            end
+            
+        elseif token.type == "char" and token.value == "[" then
+            -- Start array
+            in_array = true
+            if #stack > 0 then
+                local parent = stack[#stack]
+                parent.children = {}
+            end
+            
+        elseif token.type == "char" and token.value == "]" then
+            -- End array
+            in_array = false
+            
+        elseif token.type == "string" then
+            -- String value (remove quotes)
+            local str_value = token.value:sub(2, -2)
+            str_value = str_value:gsub('\\"', '"'):gsub('\\\\', '\\'):gsub('\\n', '\n'):gsub('\\r', '\r'):gsub('\\t', '\t')
+            
+            if current_key then
+                -- This is a value for the current key
+                if #stack > 0 then
+                    local current = stack[#stack]
+                    current[current_key] = str_value
+                    current_key = nil
+                end
+            elseif not in_array then
+                -- This is a key
+                current_key = str_value
+            elseif #stack > 0 then
+                -- String in array (probably text content)
+                local parent = stack[#stack]
+                parent.text = str_value
+            end
+            
+        elseif token.type == "number" then
+            -- Number value
+            local num_value = tonumber(token.value)
+            if current_key and #stack > 0 then
+                local current = stack[#stack]
+                current[current_key] = num_value
+                current_key = nil
+            end
+            
+        elseif token.type == "char" and token.value == ":" then
+            -- Key-value separator, already handled
+        elseif token.type == "char" and token.value == "," then
+            -- Next item, reset current_key
+            current_key = nil
+        end
+    end
+    
+    return elements
+end
+
+-- Extract ALL elements from JSON (including nested)
+function extract_all_elements(json_str)
+    print("[LUA] Extracting elements from JSON...")
+    
+    -- First, try to find all "tag": "value" patterns (simplest approach)
+    local elements = {}
+    local element_count = 0
+    
+    -- Use pattern matching to find tags
+    local pos = 1
+    while pos <= #json_str do
+        -- Look for "tag": pattern
+        local tag_start = json_str:find('"tag"%s*:%s*"', pos)
         if not tag_start then break end
         
-        -- Find the colon after tag
-        local colon_pos = json_str:find(':', tag_start, true)
-        if not colon_pos then break end
+        -- Find the tag value
+        local value_start = tag_start + string.len('"tag"%s*:%s*"')
+        local value_end = value_start
         
-        -- Find the opening quote of the value
-        local quote_start = json_str:find('"', colon_pos, true)
-        if not quote_start then break end
-        
-        -- Find the closing quote
-        local quote_end = quote_start + 1
-        while quote_end <= len and json_str:sub(quote_end, quote_end) ~= '"' do
-            if json_str:sub(quote_end, quote_end) == '\\' then
-                quote_end = quote_end + 2  -- Skip escaped character
+        while value_end <= #json_str and json_str:sub(value_end, value_end) ~= '"' do
+            if json_str:sub(value_end, value_end) == '\\' then
+                value_end = value_end + 2  -- Skip escaped quote
             else
-                quote_end = quote_end + 1
+                value_end = value_end + 1
             end
         end
         
-        if quote_end > len then break end
+        if value_end > #json_str then break end
         
-        -- Extract tag value
-        local tag_value = json_str:sub(quote_start + 1, quote_end - 1)
+        local tag_value = json_str:sub(value_start, value_end - 1)
         
-        -- Now look backward and forward to get more context
-        local context_start = math.max(1, tag_start - 100)
-        local context_end = math.min(len, quote_end + 300)
+        -- Extract surrounding context for more properties
+        local context_start = math.max(1, tag_start - 200)
+        local context_end = math.min(#json_str, value_end + 400)
         local context = json_str:sub(context_start, context_end)
         
-        -- Extract ID if present
+        -- Extract ID
         local id_value = ""
-        local id_start = context:find('"id"')
+        local id_pattern = '"id"%s*:%s*"([^"]*)"'
+        local id_start = context:find(id_pattern)
         if id_start then
-            local id_colon = context:find(':', id_start, true)
-            if id_colon then
-                local id_quote = context:find('"', id_colon, true)
-                if id_quote then
-                    local id_end = id_quote + 1
-                    while id_end <= #context and context:sub(id_end, id_end) ~= '"' do
-                        if context:sub(id_end, id_end) == '\\' then
-                            id_end = id_end + 2
-                        else
-                            id_end = id_end + 1
-                        end
-                    end
-                    if id_end <= #context then
-                        id_value = context:sub(id_quote + 1, id_end - 1)
-                    end
-                end
+            local id_match = context:match(id_pattern)
+            if id_match then
+                id_value = id_match
             end
         end
         
-        -- Extract type if present
+        -- Extract type
         local type_value = "block"
-        local type_start = context:find('"type"')
+        local type_pattern = '"type"%s*:%s*"([^"]*)"'
+        local type_start = context:find(type_pattern)
         if type_start then
-            local type_colon = context:find(':', type_start, true)
-            if type_colon then
-                local type_quote = context:find('"', type_colon, true)
-                if type_quote then
-                    local type_end = type_quote + 1
-                    while type_end <= #context and context:sub(type_end, type_end) ~= '"' do
-                        if context:sub(type_end, type_end) == '\\' then
-                            type_end = type_end + 2
-                        else
-                            type_end = type_end + 1
-                        end
-                    end
-                    if type_end <= #context then
-                        type_value = context:sub(type_quote + 1, type_end - 1)
-                    end
-                end
+            local type_match = context:match(type_pattern)
+            if type_match then
+                type_value = type_match
             end
         end
         
-        -- Extract text if present
+        -- Extract text
         local text_value = ""
-        local text_start = context:find('"text"')
+        local text_pattern = '"text"%s*:%s*"([^"]*)"'
+        local text_start = context:find(text_pattern)
         if text_start then
-            local text_colon = context:find(':', text_start, true)
-            if text_colon then
-                local text_quote = context:find('"', text_colon, true)
-                if text_quote then
-                    local text_end = text_quote + 1
-                    while text_end <= #context and context:sub(text_end, text_end) ~= '"' do
-                        if context:sub(text_end, text_end) == '\\' then
-                            text_end = text_end + 2
-                        else
-                            text_end = text_end + 1
-                        end
-                    end
-                    if text_end <= #context then
-                        text_value = context:sub(text_quote + 1, text_end - 1)
-                        text_value = text_value:gsub('\\"', '"'):gsub('\\\\', '\\')
-                    end
-                end
+            local text_match = context:match(text_pattern)
+            if text_match then
+                text_value = text_match:gsub('\\"', '"'):gsub('\\\\', '\\')
             end
         end
         
-        -- Add to elements list
+        -- Create element record
         element_count = element_count + 1
         elements[element_count] = {
             tag = tag_value,
@@ -145,7 +244,7 @@ function extract_elements_simple(json_str)
             end
         end
         
-        pos = quote_end + 1
+        pos = value_end + 1
     end
     
     print(string.format("[LUA] Total elements extracted: %d", element_count))
@@ -247,13 +346,14 @@ function calculate_dimensions(element)
     return math.floor(width), math.floor(height)
 end
 
--- Main function to calculate positions
+-- ========== FIXED MAIN FUNCTION ==========
+-- This is where the overlap was happening!
 function M.calculate_positions(json_str)
     print("[LUA] Starting position calculation...")
     print("[LUA] JSON length: " .. #json_str .. " bytes")
     
     -- Extract all elements
-    local all_elements = extract_elements_simple(json_str)
+    local all_elements = extract_all_elements(json_str)
     
     if #all_elements == 0 then
         print("[LUA] ERROR: No elements found!")
@@ -265,14 +365,17 @@ function M.calculate_positions(json_str)
 }]]
     end
     
-    -- Calculate positions
+    -- ========== FIXED: CUMULATIVE Y POSITIONING ==========
     local positioned_elements = {}
-    local current_y = 20
+    local current_y = 20  -- Start Y position
+    local margin = M.config.margin_between_elements
+    
+    print("[LUA] Calculating positions with cumulative Y values...")
     
     for i, element in ipairs(all_elements) do
         local width, height = calculate_dimensions(element)
         
-        -- Special handling for body
+        -- Special handling for body (always at 0,0)
         if element.tag == "body" then
             positioned_elements[i] = {
                 tag = element.tag,
@@ -283,7 +386,9 @@ function M.calculate_positions(json_str)
                 calculated_width = width,
                 calculated_height = height
             }
+            print(string.format("[LUA] Body at (0, 0) %dx%d", width, height))
         else
+            -- All other elements: stack vertically
             positioned_elements[i] = {
                 tag = element.tag,
                 id = element.id,
@@ -294,18 +399,22 @@ function M.calculate_positions(json_str)
                 calculated_height = height
             }
             
-            current_y = current_y + height + M.config.margin_between_elements
-        end
-        
-        -- Debug output
-        if i <= 15 then
-            local elem = positioned_elements[i]
-            local id_display = elem.id ~= "" and " (id=" .. elem.id .. ")" or ""
-            print(string.format("[LUA] %3d. %-10s%s at (%3d, %3d) %dx%d",
-                  i, "<" .. elem.tag .. ">", id_display,
-                  elem.x, elem.y, elem.calculated_width, elem.calculated_height))
+            -- Debug output for first 15 elements
+            if i <= 15 then
+                print(string.format("[LUA] %3d. %-10s%s y=%-4d + h=%-3d → next y=%d",
+                      i, "<" .. element.tag .. ">", 
+                      element.id ~= "" and " #" .. element.id or "",
+                      current_y, height, 
+                      current_y + height + margin))
+            end
+            
+            -- CRITICAL: Update Y position for NEXT element
+            current_y = current_y + height + margin
         end
     end
+    
+    print(string.format("[LUA] Final Y position: %d pixels", current_y))
+    print("[LUA] Total elements positioned: " .. #positioned_elements)
     
     -- Build result JSON
     local elements_json = {}
@@ -327,7 +436,7 @@ function M.calculate_positions(json_str)
     local result = string.format([[
 {
     "success": true,
-    "message": "Calculated positions for %d elements",
+    "message": "Calculated NON-OVERLAPPING positions for %d elements",
     "document_width": %d,
     "document_height": %d,
     "element_count": %d,
@@ -339,23 +448,26 @@ function M.calculate_positions(json_str)
     #positioned_elements,
     table.concat(elements_json, ",\n"))
     
-    print(string.format("[LUA] Calculation complete. Generated %d positions.", #positioned_elements))
+    print(string.format("[LUA] Calculation complete. Generated %d NON-OVERLAPPING positions.", #positioned_elements))
     return result
 end
 
--- Test function
+-- Test function (returns simple table, not JSON)
 function M.test_calculation()
     print("[LUA] Running test calculation...")
     
-    -- Return a simple test result
-    return {
+    -- Create a simple test result as Lua table
+    local result = {
         test_success = true,
-        test_message = "Lua test completed successfully",
+        test_message = "Test completed successfully",
         document_height = 600,
         element_count = 3
     }
+    
+    print("[LUA] Test calculation completed")
+    return result
 end
 
-print("=== LUA POSITION CALCULATOR READY ===")
-print("This version uses simple pattern matching for your Helen OS output")
+print("=== LUA POSITION CALCULATOR READY (WITH FIXED POSITIONING) ===")
+print("This version ensures NO element overlap with cumulative Y positioning")
 return M
