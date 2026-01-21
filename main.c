@@ -3738,7 +3738,7 @@ if (L) {
         
         // Save merged output
         char merged_file[512];
-        snprintf(merged_file, sizeof(merged_file), "%s_with_positions.json", output_file);
+        snprintf(merged_file, sizeof(merged_file), "%s_with_positions.txt", output_file);
         
         FILE* merged_f = fopen(merged_file, "wb");
         if (merged_f) {
