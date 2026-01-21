@@ -52,145 +52,75 @@ typedef struct {
 #include <errno.h>
 #include <string.h>
 
-// Helper: Write all bytes, retrying if needed
-ssize_t write_fully(int fd, const void *buf, size_t count) {
-    size_t total_written = 0;
-    const char *ptr = (const char *)buf;
+int kopiraj_fajl(const char *src_file) {
+    if (!KOPIRAJ) return 0;
     
-    while (total_written < count) {
-        ssize_t written = write(fd, ptr + total_written, count - total_written);
-        if (written < 0) {
-            if (errno == EINTR) continue; // Interrupted, try again
-            return -1; // Real error
-        }
-        if (written == 0) return total_written; // EOF
-        total_written += written;
+    // Extract just the filename from source path
+    const char *filename = strrchr(src_file, '/');
+    if (filename) {
+        filename++; // Skip '/'
+    } else {
+        filename = src_file;
     }
-    return total_written;
-}
-
-// Improved kopiraj_fajl function
-int kopiraj_fajl(const char *source_path, const char *server_path) {
-    printf("[DEBUG] kopiraj_fajl: Copying %s to server...\n", source_path);
     
-    int source_fd = open(source_path, O_RDONLY);
-    if (source_fd < 0) {
-        printf("[ERROR] Failed to open source file: %s (%s)\n", 
-               source_path, strerror(errno));
+    // Build destination path
+    char dst_path[512];
+    snprintf(dst_path, sizeof(dst_path), "/data/web/%s", filename);
+    
+    printf("Copying %s -> %s\n", src_file, dst_path);
+    
+    FILE *src = fopen(src_file, "rb");
+    if (!src) {
+        printf("  ERROR: Cannot open source file\n");
         return -1;
     }
     
-    // Get file size for debugging
-    off_t file_size = lseek(source_fd, 0, SEEK_END);
-    lseek(source_fd, 0, SEEK_SET);
-    printf("[DEBUG] File size: %ld bytes\n", (long)file_size);
+    // Get file size
+    fseek(src, 0, SEEK_END);
+    long size = ftell(src);
+    fseek(src, 0, SEEK_SET);
     
-    // Open server connection (adjust this to your actual server setup)
-    int server_fd = open(server_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (server_fd < 0) {
-        printf("[ERROR] Failed to open server file: %s (%s)\n", 
-               server_path, strerror(errno));
-        close(source_fd);
+    if (size <= 0) {
+        fclose(src);
+        printf("  WARNING: Source file is empty\n");
         return -1;
     }
     
-    // Use larger buffer for big files
-    #define BUFFER_SIZE (64 * 1024)  // 64KB buffer
-    char buffer[BUFFER_SIZE];
-    ssize_t total_copied = 0;
-    ssize_t bytes_read;
-    
-    while ((bytes_read = read(source_fd, buffer, BUFFER_SIZE)) > 0) {
-        ssize_t bytes_written = write_fully(server_fd, buffer, bytes_read);
-        if (bytes_written != bytes_read) {
-            printf("[ERROR] Write incomplete: read %zd, wrote %zd (%s)\n",
-                   bytes_read, bytes_written, strerror(errno));
-            close(source_fd);
-            close(server_fd);
-            return -1;
-        }
-        total_copied += bytes_written;
-        
-        // Progress report for large files
-        if (file_size > 0) {
-            int percent = (int)((total_copied * 100) / file_size);
-            if (percent % 10 == 0) {  // Log every 10%
-                printf("[DEBUG] Copy progress: %d%% (%ld/%ld bytes)\n",
-                       percent, (long)total_copied, (long)file_size);
-            }
-        }
-    }
-    
-    if (bytes_read < 0) {
-        printf("[ERROR] Read error: %s\n", strerror(errno));
-        close(source_fd);
-        close(server_fd);
+    // Read entire file
+    char *buffer = malloc(size + 1);
+    if (!buffer) {
+        fclose(src);
         return -1;
     }
     
-    printf("[DEBUG] Copy completed: %ld bytes total\n", (long)total_copied);
+    size_t read = fread(buffer, 1, size, src);
+    fclose(src);
     
-    // Ensure all data is flushed
-    if (fsync(server_fd) < 0) {
-        printf("[WARN] fsync failed: %s\n", strerror(errno));
+    if (read != (size_t)size) {
+        free(buffer);
+        printf("  ERROR: Read failed\n");
+        return -1;
     }
     
-    close(source_fd);
-    close(server_fd);
+    // Write to destination
+    FILE *dst = fopen(dst_path, "wb");
+    if (!dst) {
+        free(buffer);
+        printf("  ERROR: Cannot create destination file\n");
+        return -1;
+    }
+    
+    size_t written = fwrite(buffer, 1, size, dst);
+    fclose(dst);
+    free(buffer);
+    
+    if (written != (size_t)size) {
+        printf("  ERROR: Write failed\n");
+        return -1;
+    }
+    
+    printf("  Success: %ld bytes copied\n", size);
     return 0;
-}
-
-// Alternative: Memory-mapped version for very large files
-int kopiraj_fajl_mmap(const char *source_path, const char *server_path) {
-    printf("[DEBUG] Using mmap for large file...\n");
-    
-    int source_fd = open(source_path, O_RDONLY);
-    if (source_fd < 0) {
-        printf("[ERROR] Open source failed: %s\n", strerror(errno));
-        return -1;
-    }
-    
-    struct stat st;
-    if (fstat(source_fd, &st) < 0) {
-        printf("[ERROR] fstat failed: %s\n", strerror(errno));
-        close(source_fd);
-        return -1;
-    }
-    
-    if (st.st_size == 0) {
-        printf("[WARN] Source file is empty\n");
-        close(source_fd);
-        return 0;
-    }
-    
-    // Map the entire file
-    void *mapped = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, source_fd, 0);
-    if (mapped == MAP_FAILED) {
-        printf("[ERROR] mmap failed: %s\n", strerror(errno));
-        close(source_fd);
-        return -1;
-    }
-    
-    // Open destination
-    int server_fd = open(server_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (server_fd < 0) {
-        printf("[ERROR] Open server failed: %s\n", strerror(errno));
-        munmap(mapped, st.st_size);
-        close(source_fd);
-        return -1;
-    }
-    
-    // Write all at once
-    ssize_t written = write_fully(server_fd, mapped, st.st_size);
-    
-    printf("[DEBUG] Mapped and wrote %ld/%ld bytes\n", 
-           (long)written, (long)st.st_size);
-    
-    munmap(mapped, st.st_size);
-    close(source_fd);
-    close(server_fd);
-    
-    return (written == st.st_size) ? 0 : -1;
 }
 //ZA ATRIBUTE
 static void convert_dash_to_camel(const char *dash_str, char *camel_str, size_t max_len) {
