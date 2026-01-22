@@ -46,12 +46,6 @@ typedef struct {
 } RenderingElement;
 
 //kopiraj fajl
-#include <fcntl.h>
-#include <unistd.h>
-#include <stdio.h>
-#include <errno.h>
-#include <string.h>
-
 int kopiraj_fajl(const char *src_file) {
     if (!KOPIRAJ) return 0;
     
@@ -520,6 +514,142 @@ cJSON* parse_inline_styles_simple(lxb_dom_attr_t *style_attr) {
     return styles;
 }
 
+cJSON* build_document_hierarchy(lxb_html_document_t* document) {
+    printf("\n=== Building Document Hierarchy ===\n");
+    
+    // Create root array for the document
+    cJSON* root_array = cJSON_CreateArray();
+    int element_counter = 1;  // Start IDs from 1
+    
+    // FIX: Cast the return type properly
+    lxb_html_body_element_t* html_body = lxb_html_document_body_element(document);
+    lxb_dom_element_t* body_element = (lxb_dom_element_t*)html_body;
+    
+    if (!body_element) {
+        // Fallback: search for body manually
+        lxb_dom_node_t* node = lxb_dom_interface_node(document)->first_child;
+        while (node) {
+            if (node->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                lxb_dom_element_t* elem = lxb_dom_interface_element(node);
+                size_t tag_len;
+                const lxb_char_t* tag_name = lxb_dom_element_qualified_name(elem, &tag_len);
+                
+                if (tag_name && tag_len == 4 && strncasecmp((char*)tag_name, "body", 4) == 0) {
+                    body_element = elem;
+                    break;
+                }
+            }
+            node = node->next;
+        }
+    }
+    
+    if (body_element) {
+        printf("Found body element, starting hierarchy...\n");
+        
+        // Create body element JSON
+        cJSON* body_json = element_to_rendering_json(body_element, 0);
+        if (body_json) {
+            // Get body element ID
+            int body_element_id = element_counter++;
+            cJSON_AddNumberToObject(body_json, "element_id", body_element_id);
+            cJSON_AddNumberToObject(body_json, "parent_id", 0);
+            
+            // Add layout for body
+            cJSON_AddNumberToObject(body_json, "layout_width", 800);
+            cJSON_AddNumberToObject(body_json, "layout_height", 600);
+            
+            // Create children array
+            cJSON* body_children = cJSON_CreateArray();
+            cJSON_AddItemToObject(body_json, "children", body_children);
+            
+            // Add body to root array
+            cJSON_AddItemToArray(root_array, body_json);
+            
+            // Process body's children with correct parent_id
+            lxb_dom_node_t* body_node = lxb_dom_interface_node(body_element);
+            lxb_dom_node_t* child = body_node->first_child;
+            
+            while (child) {
+                // Process each child (you need to implement this part)
+                // For now, just create basic child elements
+                if (child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                    lxb_dom_element_t* child_elem = lxb_dom_interface_element(child);
+                    cJSON* child_json = element_to_rendering_json(child_elem, 0);
+                    
+                    if (child_json) {
+                        int child_id = element_counter++;
+                        cJSON_AddNumberToObject(child_json, "element_id", child_id);
+                        cJSON_AddNumberToObject(child_json, "parent_id", body_element_id);
+                        cJSON_AddNumberToObject(child_json, "layout_width", 760);
+                        cJSON_AddNumberToObject(child_json, "layout_height", 40);
+                        
+                        // Create empty children array for this child
+                        cJSON* child_children = cJSON_CreateArray();
+                        cJSON_AddItemToObject(child_json, "children", child_children);
+                        
+                        cJSON_AddItemToArray(body_children, child_json);
+                        
+                        printf("  Added child <%s> id=%d to body\n", 
+                               lxb_dom_element_tag_name(child_elem, NULL), child_id);
+                    }
+                }
+                child = child->next;
+            }
+            
+            printf("✓ Hierarchy built with %d total elements\n", element_counter - 1);
+        }
+    } else {
+        printf("No body element found\n");
+    }
+    
+    return root_array;
+}
+
+cJSON* build_hierarchy_with_ids(lxb_dom_node_t* root_node, cJSON* parent_container) {
+    static int element_counter = 1;  // Static counter maintains state across calls
+    int parent_id = 0;
+    
+    // Get parent ID if parent_container exists
+    if (parent_container) {
+        cJSON* parent_id_item = cJSON_GetObjectItem(parent_container, "element_id");
+        if (parent_id_item && cJSON_IsNumber(parent_id_item)) {
+            parent_id = parent_id_item->valueint;
+        }
+    }
+    
+    // Create element using your existing function
+    lxb_dom_element_t* element = lxb_dom_interface_element(root_node);
+    cJSON* element_json = element_to_rendering_json(element, 0);
+    
+    if (!element_json) return NULL;
+    
+    // Add hierarchy fields
+    int my_id = element_counter++;
+    cJSON_AddNumberToObject(element_json, "element_id", my_id);
+    cJSON_AddNumberToObject(element_json, "parent_id", parent_id);
+    
+    // Add layout
+    cJSON_AddNumberToObject(element_json, "layout_width", 800);
+    cJSON_AddNumberToObject(element_json, "layout_height", 40);
+    
+    // Create children array
+    cJSON* children_array = cJSON_CreateArray();
+    cJSON_AddItemToObject(element_json, "children", children_array);
+    
+    // Process children recursively
+    lxb_dom_node_t* child = root_node->first_child;
+    while (child) {
+        cJSON* child_json = build_hierarchy_with_ids(child, element_json);
+        if (child_json) {
+            cJSON_AddItemToArray(children_array, child_json);
+        }
+        child = child->next;
+    }
+    
+    return element_json;
+}
+
+
 // Process node recursively for rendering
 cJSON* process_node_for_rendering(lxb_dom_node_t *node, int depth) {
     if (!node || depth > 20) return NULL; // Safety limit
@@ -915,6 +1045,12 @@ cJSON_AddBoolToObject(elem_json, "has_default_summary", false);  // ← ADD
         cJSON_AddItemToObject(elem_json, "classes", classes_array);
         cJSON_AddStringToObject(elem_json, "class_string", "");
         
+
+                // 10. Hierarchy tracking (NEW DEFAULTS)
+        cJSON_AddNumberToObject(elem_json, "element_id", -1);      // Default: not assigned yet
+        cJSON_AddNumberToObject(elem_json, "parent_id", -1);       // Default: no parent
+     
+
         // ========== NOW OVERRIDE DEFAULTS WITH ACTUAL VALUES ==========
         
         // Determine element type based on tag
@@ -2630,6 +2766,34 @@ cJSON_ReplaceItemInObject(elem_json, "font_size", cJSON_CreateNumber(11));
     return NULL;
 }
 
+void assign_element_ids(cJSON *element, int parent_id, int *id_counter) {
+    if (!element || !id_counter) return;
+    
+    // Assign a unique ID to this element
+    int current_id = (*id_counter)++;
+    
+    // Update the element_id field (changing from -1 to actual ID)
+    cJSON *id_field = cJSON_GetObjectItem(element, "element_id");
+    if (id_field) {
+        cJSON_SetNumberValue(id_field, current_id);
+    }
+    
+    // Update the parent_id field
+    cJSON *parent_field = cJSON_GetObjectItem(element, "parent_id");
+    if (parent_field) {
+        cJSON_SetNumberValue(parent_field, parent_id);
+    }
+    
+    // Recursively process children
+    cJSON *children = cJSON_GetObjectItem(element, "children");
+    if (children && cJSON_IsArray(children)) {
+        cJSON *child;
+        cJSON_ArrayForEach(child, children) {
+            assign_element_ids(child, current_id, id_counter);
+        }
+    }
+}
+
 char* get_element_text(lxb_dom_element_t *elem) {
     if (!elem) {
         return strdup("");
@@ -3629,150 +3793,227 @@ if (menu_count > 0) {
     }
     
 // ========== STEP 8.5: Calculate Positions with Lua ==========
+// ========== STEP 8.5: Calculate Positions with Lua ==========
 printf("\n=== STEP 8.5: Calculate Element Positions with Lua ===\n");
 
-// Initialize Lua calculator
-lua_State* L = init_lua_position_calculator("position_calculator.lua");
-if (L) {
-    printf("✓ Lua initialized successfully\n");
+// Initialize Lua
+lua_State* L = luaL_newstate();
+luaL_openlibs(L);
+
+// DEBUG: Check if file exists
+FILE* test = fopen("position_calculator.lua", "r");
+if (test) {
+    fclose(test);
+    printf("✓ position_calculator.lua exists\n");
+} else {
+    printf("✗ position_calculator.lua NOT FOUND in current directory!\n");
+    // Don't continue if file doesn't exist
+    lua_close(L);
+    printf("=== STEP 8.5 COMPLETE (skipped) ===\n");
+    // Continue with rest of main(), don't return from main
+    goto lua_cleanup;
+}
+
+// Load the Lua script
+printf("Loading Lua script...\n");
+if (luaL_loadfile(L, "position_calculator.lua") != LUA_OK) {
+    printf("✗ Failed to LOAD Lua script: %s\n", lua_tostring(L, -1));
+    lua_close(L);
+    printf("=== STEP 8.5 COMPLETE ===\n");
+    goto lua_cleanup;
+}
+
+// Execute the script
+if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
+    printf("✗ Failed to EXECUTE Lua script: %s\n", lua_tostring(L, -1));
+    lua_close(L);
+    printf("=== STEP 8.5 COMPLETE ===\n");
+    goto lua_cleanup;
+}
+
+printf("✓ Lua script loaded and executed\n");
+
+// Check what Lua returned
+printf("Lua returned type: %s\n", lua_typename(L, lua_type(L, -1)));
+
+// Try to get the function (it should be global)
+lua_getglobal(L, "calculate_positions");
+if (!lua_isfunction(L, -1)) {
+    printf("✗ calculate_positions not found as global function\n");
     
-    
-    // Create configuration matching your viewport
-    LuaLayoutConfig config = {
-        .viewport_width = 800,
-        .viewport_height = 600,
-        .default_font_size = 16,
-        .line_height_multiplier = 1.2,
-        .margin_between_elements = 15,  // Increased for better spacing
-        .padding_inside_elements = 8
-    };
-    
-    printf("Calling Lua to calculate positions...\n");
-    printf("Main output has %d top-level elements\n", cJSON_GetArraySize(rendering_output));
-    
-    // Calculate positions using Lua
-    cJSON* lua_output = calculate_positions_lua(L, rendering_output, &config);
-    
-    if (lua_output) {
-        printf("✓ Lua calculation succeeded!\n");
-        
-        // Debug: Print Lua output summary
-        cJSON* success = cJSON_GetObjectItem(lua_output, "success");
-        cJSON* message = cJSON_GetObjectItem(lua_output, "message");
-        cJSON* element_count = cJSON_GetObjectItem(lua_output, "element_count");
-        
-        if (success && cJSON_IsTrue(success) && message) {
-            printf("Lua: %s\n", message->valuestring);
-        }
-        
-        if (element_count && cJSON_IsNumber(element_count)) {
-            printf("Lua positioned %d elements\n", (int)element_count->valuedouble);
-        }
-        
-        cJSON* elements = cJSON_GetObjectItem(lua_output, "elements");
-        if (elements && cJSON_IsArray(elements)) {
-            int count = cJSON_GetArraySize(elements);
-            printf("Lua elements array has %d items\n", count);
-            
-            // Print first 15 elements for debugging
-            int print_limit = count < 15 ? count : 15;
-            printf("First %d positioned elements:\n", print_limit);
-            
-            for (int i = 0; i < print_limit; i++) {
-                cJSON* elem = cJSON_GetArrayItem(elements, i);
-                if (elem) {
-                    cJSON* tag = cJSON_GetObjectItem(elem, "tag");
-                    cJSON* id = cJSON_GetObjectItem(elem, "id");
-                    cJSON* type = cJSON_GetObjectItem(elem, "type");
-                    cJSON* x = cJSON_GetObjectItem(elem, "x");
-                    cJSON* y = cJSON_GetObjectItem(elem, "y");
-                    cJSON* width = cJSON_GetObjectItem(elem, "calculated_width");
-                    cJSON* height = cJSON_GetObjectItem(elem, "calculated_height");
-                    
-                    if (tag && x && y) {
-                        printf("  [%2d] %-8s", i + 1, tag->valuestring);
-                        if (id && cJSON_IsString(id) && strlen(id->valuestring) > 0) {
-                            printf(" #%s", id->valuestring);
-                        }
-                        if (type && cJSON_IsString(type)) {
-                            printf(" (%s)", type->valuestring);
-                        }
-                        printf(" at (%4.0f, %4.0f)", x->valuedouble, y->valuedouble);
-                        if (width && height) {
-                            printf(" %4.0fx%-4.0f", width->valuedouble, height->valuedouble);
-                        }
-                        printf("\n");
-                    }
-                }
-            }
-            
-            if (count > print_limit) {
-                printf("  ... and %d more elements\n", count - print_limit);
-            }
+    // Maybe it's in the returned table
+    lua_pop(L, 1); // Remove nil
+    if (lua_istable(L, -1)) {
+        printf("  Lua returned a table, checking for function...\n");
+        lua_getfield(L, -1, "calculate_positions");
+        if (lua_isfunction(L, -1)) {
+            printf("  ✓ Found calculate_positions in returned table\n");
         } else {
-            printf("⚠ Warning: No 'elements' array in Lua output\n");
-            // Debug what we actually got
-            char* debug_str = cJSON_Print(lua_output);
-            if (debug_str) {
-                printf("Lua output (first 500 chars):\n%.500s%s\n", 
-                       debug_str, strlen(debug_str) > 500 ? "..." : "");
-                free(debug_str);
-            }
+            printf("  ✗ Not in table either\n");
+            lua_close(L);
+            printf("=== STEP 8.5 COMPLETE ===\n");
+            goto lua_cleanup;
         }
-        
-        // Merge Lua positions into main output
-        printf("\nMerging Lua positions into main output...\n");
-        merge_lua_positions_fixed(rendering_output, lua_output);
-        
-        // Count how many elements got positions
-        int positioned_count = 0;
-        if (cJSON_IsArray(rendering_output)) {
-            for (int i = 0; i < cJSON_GetArraySize(rendering_output); i++) {
-                cJSON* elem = cJSON_GetArrayItem(rendering_output, i);
-                if (elem && cJSON_HasObjectItem(elem, "calculated_width")) {
-                    positioned_count++;
-                }
-            }
-        }
-        printf("✓ Merged complete. %d elements now have calculated dimensions.\n", positioned_count);
-        
-        // Save merged output
-        char merged_file[512];
-        snprintf(merged_file, sizeof(merged_file), "%s_with_positions.txt", output_file);
-        
-        FILE* merged_f = fopen(merged_file, "wb");
-        if (merged_f) {
-            char* merged_json = cJSON_Print(rendering_output);
-            if (merged_json) {
-                size_t written = fwrite(merged_json, 1, strlen(merged_json), merged_f);
-                printf("✓ Saved merged output to: %s (%zu bytes)\n", merged_file, written);
-                free(merged_json);
-                kopiraj_fajl(merged_file);
-            } else {
-                printf("⚠ Failed to generate JSON for merged output\n");
-            }
-            fclose(merged_f);
-        } else {
-            printf("⚠ Could not create file: %s\n", merged_file);
-        }
-        
-        cJSON_Delete(lua_output);
     } else {
-        printf("✗ Lua calculation failed!\n");
-        printf("  Check if position_calculator.lua exists in current directory\n");
-        printf("  Or if Lua function 'calculate_positions' is defined in the script\n");
+        printf("  Lua didn't return a table\n");
+        lua_close(L);
+        printf("=== STEP 8.5 COMPLETE ===\n");
+        goto lua_cleanup;
+    }
+} else {
+    printf("✓ Found calculate_positions as global function\n");
+}
+
+// Create configuration
+LuaLayoutConfig config = {
+    .viewport_width = 800,
+    .viewport_height = 600,
+    .default_font_size = 16,
+    .line_height_multiplier = 1.2,
+    .margin_between_elements = 15,
+    .padding_inside_elements = 8
+};
+
+// Convert rendering_output to JSON string
+printf("Converting rendering_output to JSON...\n");
+char* json_str = cJSON_PrintUnformatted(rendering_output);
+if (!json_str) {
+    printf("✗ Failed to convert JSON to string\n");
+    lua_close(L);
+    printf("=== STEP 8.5 COMPLETE ===\n");
+    goto lua_cleanup;
+}
+
+// DEBUG: Save what we're sending
+FILE* debug_f = fopen("debug_c_to_lua.json", "w");
+if (debug_f) {
+    fwrite(json_str, 1, strlen(json_str), debug_f);
+    fclose(debug_f);
+    printf("✓ Saved JSON to debug_c_to_lua.json (%zu bytes)\n", strlen(json_str));
+}
+
+printf("Calling Lua calculate_positions function...\n");
+
+// Push arguments: json_string, config_table
+lua_pushstring(L, json_str);
+
+// Create config table
+lua_newtable(L);
+lua_pushstring(L, "viewport_width");
+lua_pushnumber(L, config.viewport_width);
+lua_settable(L, -3);
+
+lua_pushstring(L, "viewport_height");
+lua_pushnumber(L, config.viewport_height);
+lua_settable(L, -3);
+
+// Call Lua function (2 arguments)
+if (lua_pcall(L, 2, 1, 0) != LUA_OK) {
+    printf("✗ Lua function ERROR: %s\n", lua_tostring(L, -1));
+    free(json_str);
+    lua_close(L);
+    printf("=== STEP 8.5 COMPLETE ===\n");
+    goto lua_cleanup;
+}
+
+printf("✓ Lua function executed successfully\n");
+
+// SIMPLIFIED: Just print what Lua returned
+if (lua_istable(L, -1)) {
+    printf("Lua returned a table\n");
+    
+    // Get success field
+    lua_getfield(L, -1, "success");
+    if (lua_isboolean(L, -1)) {
+        printf("Lua success: %s\n", lua_toboolean(L, -1) ? "true" : "false");
+    }
+    lua_pop(L, 1);
+    
+    // Get message field
+    lua_getfield(L, -1, "message");
+    if (lua_isstring(L, -1)) {
+        printf("Lua message: %s\n", lua_tostring(L, -1));
+    }
+    lua_pop(L, 1);
+    
+    // Get element_count field
+    lua_getfield(L, -1, "element_count");
+    if (lua_isnumber(L, -1)) {
+        printf("Lua element_count: %d\n", (int)lua_tonumber(L, -1));
+    }
+    lua_pop(L, 1);
+    
+    // Check if we have elements
+    lua_getfield(L, -1, "elements");
+    if (lua_istable(L, -1)) {
+        int elem_count = 0;
+        lua_pushnil(L);
+        while (lua_next(L, -2) != 0) {
+            elem_count++;
+            lua_pop(L, 1);
+        }
+        printf("Lua elements array has %d items\n", elem_count);
+    }
+    lua_pop(L, 1);
+    
+    // ========== WRITE SIMPLE OUTPUT ==========
+    printf("\nCreating positioned output file...\n");
+    
+    // Convert Lua result back to JSON string
+    lua_getglobal(L, "tostring");
+    lua_pushvalue(L, -2); // Push the result table
+    if (lua_pcall(L, 1, 1, 0) == LUA_OK) {
+        const char* result_str = lua_tostring(L, -1);
+        if (result_str) {
+            FILE* out_f = fopen("text.html.txt_with_positions.txt", "w");
+            if (out_f) {
+                fwrite(result_str, 1, strlen(result_str), out_f);
+                fclose(out_f);
+                printf("✓ Saved Lua result to text.html.txt_with_positions.txt\n");
+                
+                // Show first 200 chars
+                printf("First 200 chars of result:\n%.200s\n", result_str);
+                
+                // Copy if needed
+                kopiraj_fajl("text.html.txt_with_positions.txt");
+            } else {
+                printf("✗ Could not create output file\n");
+            }
+        }
+        lua_pop(L, 1);
+    } else {
+        printf("✗ Could not convert Lua result to string\n");
     }
     
-    // Cleanup Lua
-    cleanup_lua_position_calculator(L);
-    printf("✓ Lua cleaned up\n");
 } else {
-    printf("✗ Lua initialization failed!\n");
-    printf("  Possible causes:\n");
-    printf("  1. position_calculator.lua file not found\n");
-    printf("  2. Lua library not linked correctly\n");
-    printf("  3. Script has syntax errors\n");
+    printf("✗ Lua didn't return a table, got: %s\n", lua_typename(L, lua_type(L, -1)));
+    
+    // Try to print what it did return
+    if (lua_isstring(L, -1)) {
+        printf("Lua returned string: %s\n", lua_tostring(L, -1));
+    } else if (lua_isnumber(L, -1)) {
+        printf("Lua returned number: %f\n", lua_tonumber(L, -1));
+    } else if (lua_isboolean(L, -1)) {
+        printf("Lua returned boolean: %s\n", lua_toboolean(L, -1) ? "true" : "false");
+    }
+    
+    // Try to write whatever we got
+    const char* result = lua_tostring(L, -1);
+    if (result) {
+        FILE* out_f = fopen("text.html.txt_with_positions.txt", "w");
+        if (out_f) {
+            fwrite(result, 1, strlen(result), out_f);
+            fclose(out_f);
+            printf("✓ Saved raw result to text.html.txt_with_positions.txt\n");
+        }
+    }
 }
+
+free(json_str);
+
+lua_cleanup:
+lua_close(L);
+printf("✓ Lua cleaned up\n");
 
 printf("=== STEP 8.5 COMPLETE ===\n");
 
