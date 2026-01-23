@@ -3792,230 +3792,492 @@ if (menu_count > 0) {
         }
     }
     
-// ========== STEP 8.5: Calculate Positions with Lua ==========
-// ========== STEP 8.5: Calculate Positions with Lua ==========
-printf("\n=== STEP 8.5: Calculate Element Positions with Lua ===\n");
+// ========== STEP 8.5: Calculate X/Y Positions for Text Layout ==========
+printf("\n=== STEP 8.5: Calculate X/Y Positions for Text Layout ===\n");
 
-// Initialize Lua
-lua_State* L = luaL_newstate();
-luaL_openlibs(L);
-
-// DEBUG: Check if file exists
-FILE* test = fopen("position_calculator.lua", "r");
-if (test) {
-    fclose(test);
-    printf("✓ position_calculator.lua exists\n");
-} else {
-    printf("✗ position_calculator.lua NOT FOUND in current directory!\n");
-    // Don't continue if file doesn't exist
-    lua_close(L);
-    printf("=== STEP 8.5 COMPLETE (skipped) ===\n");
-    // Continue with rest of main(), don't return from main
-    goto lua_cleanup;
+// 1. Check if text.html.txt exists
+printf("Checking for text.html.txt...\n");
+FILE* json_file = fopen("text.html.txt", "r");
+if (!json_file) {
+    printf("✗ ERROR: text.html.txt not found!\n");
+    printf("  Required: Run Step 8 first (generate_rendering_output)\n");
+    printf("=== STEP 8.5 COMPLETE (skipped - input missing) ===\n");
+    goto layout_cleanup;
 }
 
-// Load the Lua script
-printf("Loading Lua script...\n");
-if (luaL_loadfile(L, "position_calculator.lua") != LUA_OK) {
-    printf("✗ Failed to LOAD Lua script: %s\n", lua_tostring(L, -1));
-    lua_close(L);
-    printf("=== STEP 8.5 COMPLETE ===\n");
-    goto lua_cleanup;
+// Get file size
+fseek(json_file, 0, SEEK_END);
+long file_size = ftell(json_file);
+fseek(json_file, 0, SEEK_SET);
+
+printf("✓ Found text.html.txt (%ld bytes)\n", file_size);
+
+// 2. Read the JSON file
+char* json_content = malloc(file_size + 1);
+if (!json_content) {
+    printf("✗ Memory allocation failed\n");
+    fclose(json_file);
+    goto layout_cleanup;
 }
 
-// Execute the script
-if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
-    printf("✗ Failed to EXECUTE Lua script: %s\n", lua_tostring(L, -1));
-    lua_close(L);
-    printf("=== STEP 8.5 COMPLETE ===\n");
-    goto lua_cleanup;
+ read_size = fread(json_content, 1, file_size, json_file);
+json_content[read_size] = '\0';
+fclose(json_file);
+
+// 3. Initialize QuickJS for parsing
+printf("Initializing QuickJS parser...\n");
+JSRuntime* rt = JS_NewRuntime();
+if (!rt) {
+    printf("✗ Failed to create JS runtime\n");
+    free(json_content);
+    goto layout_cleanup;
 }
 
-printf("✓ Lua script loaded and executed\n");
+JSContext* ctx = JS_NewContext(rt);
+if (!ctx) {
+    printf("✗ Failed to create JS context\n");
+    JS_FreeRuntime(rt);
+    free(json_content);
+    goto layout_cleanup;
+}
 
-// Check what Lua returned
-printf("Lua returned type: %s\n", lua_typename(L, lua_type(L, -1)));
+// 4. Parse JSON
+printf("Parsing JSON structure...\n");
+JSValue json_val = JS_ParseJSON(ctx, json_content, strlen(json_content), "text.html.txt");
+free(json_content);
 
-// Try to get the function (it should be global)
-lua_getglobal(L, "calculate_positions");
-if (!lua_isfunction(L, -1)) {
-    printf("✗ calculate_positions not found as global function\n");
-    
-    // Maybe it's in the returned table
-    lua_pop(L, 1); // Remove nil
-    if (lua_istable(L, -1)) {
-        printf("  Lua returned a table, checking for function...\n");
-        lua_getfield(L, -1, "calculate_positions");
-        if (lua_isfunction(L, -1)) {
-            printf("  ✓ Found calculate_positions in returned table\n");
-        } else {
-            printf("  ✗ Not in table either\n");
-            lua_close(L);
-            printf("=== STEP 8.5 COMPLETE ===\n");
-            goto lua_cleanup;
+if (JS_IsException(json_val)) {
+    printf("✗ Failed to parse JSON\n");
+    JSValue exception = JS_GetException(ctx);
+    const char* err_msg = JS_ToCString(ctx, exception);
+    if (err_msg) {
+        printf("Error: %s\n", err_msg);
+        JS_FreeCString(ctx, err_msg);
+    }
+    JS_FreeValue(ctx, exception);
+    JS_FreeValue(ctx, json_val);
+    JS_FreeContext(ctx);
+    JS_FreeRuntime(rt);
+    goto layout_cleanup;
+}
+
+printf("✓ JSON parsed successfully\n");
+
+// 5. Define data structures for positioning
+#define TERMINAL_WIDTH 80
+#define TERMINAL_HEIGHT 200
+
+typedef struct {
+    int start_x, end_x;
+    int start_y, end_y;
+    char tag[50];
+} ElementPosition;
+
+// Create a grid for positioning
+char** grid = malloc(TERMINAL_HEIGHT * sizeof(char*));
+for (int i = 0; i < TERMINAL_HEIGHT; i++) {
+    grid[i] = malloc(TERMINAL_WIDTH + 1);
+    memset(grid[i], ' ', TERMINAL_WIDTH);
+    grid[i][TERMINAL_WIDTH] = '\0';
+}
+
+ElementPosition* positions = malloc(1000 * sizeof(ElementPosition));
+int pos_count = 0;
+int overlaps_found = 0;
+int current_y = 0;
+
+// Function to check for overlaps
+int check_overlap(int x, int y, int width, int height, const char* tag) {
+    for (int i = 0; i < pos_count; i++) {
+        ElementPosition* existing = &positions[i];
+        
+        if (strcmp(existing->tag, tag) == 0) continue;
+        
+        if (x < existing->end_x && x + width > existing->start_x &&
+            y < existing->end_y && y + height > existing->start_y) {
+            return 1; // Overlap detected
         }
-    } else {
-        printf("  Lua didn't return a table\n");
-        lua_close(L);
-        printf("=== STEP 8.5 COMPLETE ===\n");
-        goto lua_cleanup;
     }
-} else {
-    printf("✓ Found calculate_positions as global function\n");
+    return 0; // No overlap
 }
 
-// Create configuration
-LuaLayoutConfig config = {
-    .viewport_width = 800,
-    .viewport_height = 600,
-    .default_font_size = 16,
-    .line_height_multiplier = 1.2,
-    .margin_between_elements = 15,
-    .padding_inside_elements = 8
-};
-
-// Convert rendering_output to JSON string
-printf("Converting rendering_output to JSON...\n");
-char* json_str = cJSON_PrintUnformatted(rendering_output);
-if (!json_str) {
-    printf("✗ Failed to convert JSON to string\n");
-    lua_close(L);
-    printf("=== STEP 8.5 COMPLETE ===\n");
-    goto lua_cleanup;
-}
-
-// DEBUG: Save what we're sending
-FILE* debug_f = fopen("debug_c_to_lua.json", "w");
-if (debug_f) {
-    fwrite(json_str, 1, strlen(json_str), debug_f);
-    fclose(debug_f);
-    printf("✓ Saved JSON to debug_c_to_lua.json (%zu bytes)\n", strlen(json_str));
-}
-
-printf("Calling Lua calculate_positions function...\n");
-
-// Push arguments: json_string, config_table
-lua_pushstring(L, json_str);
-
-// Create config table
-lua_newtable(L);
-lua_pushstring(L, "viewport_width");
-lua_pushnumber(L, config.viewport_width);
-lua_settable(L, -3);
-
-lua_pushstring(L, "viewport_height");
-lua_pushnumber(L, config.viewport_height);
-lua_settable(L, -3);
-
-// Call Lua function (2 arguments)
-if (lua_pcall(L, 2, 1, 0) != LUA_OK) {
-    printf("✗ Lua function ERROR: %s\n", lua_tostring(L, -1));
-    free(json_str);
-    lua_close(L);
-    printf("=== STEP 8.5 COMPLETE ===\n");
-    goto lua_cleanup;
-}
-
-printf("✓ Lua function executed successfully\n");
-
-// SIMPLIFIED: Just print what Lua returned
-if (lua_istable(L, -1)) {
-    printf("Lua returned a table\n");
+// Recursive function to position elements
+void position_element(JSValue element, int depth, int parent_x, int parent_y) {
+    if (!JS_IsObject(element)) return;
     
-    // Get success field
-    lua_getfield(L, -1, "success");
-    if (lua_isboolean(L, -1)) {
-        printf("Lua success: %s\n", lua_toboolean(L, -1) ? "true" : "false");
+    // Get tag
+    JSValue tag_val = JS_GetPropertyStr(ctx, element, "tag");
+    const char* tag = NULL;
+    if (!JS_IsUndefined(tag_val)) {
+        tag = JS_ToCString(ctx, tag_val);
     }
-    lua_pop(L, 1);
+    JS_FreeValue(ctx, tag_val);
     
-    // Get message field
-    lua_getfield(L, -1, "message");
-    if (lua_isstring(L, -1)) {
-        printf("Lua message: %s\n", lua_tostring(L, -1));
+    // Get text
+    JSValue text_val = JS_GetPropertyStr(ctx, element, "text");
+    const char* text = NULL;
+    if (!JS_IsUndefined(text_val)) {
+        text = JS_ToCString(ctx, text_val);
     }
-    lua_pop(L, 1);
+    JS_FreeValue(ctx, text_val);
     
-    // Get element_count field
-    lua_getfield(L, -1, "element_count");
-    if (lua_isnumber(L, -1)) {
-        printf("Lua element_count: %d\n", (int)lua_tonumber(L, -1));
-    }
-    lua_pop(L, 1);
+    // Get children
+    JSValue children_val = JS_GetPropertyStr(ctx, element, "children");
+    int has_children = JS_IsArray(ctx, children_val);
     
-    // Check if we have elements
-    lua_getfield(L, -1, "elements");
-    if (lua_istable(L, -1)) {
-        int elem_count = 0;
-        lua_pushnil(L);
-        while (lua_next(L, -2) != 0) {
-            elem_count++;
-            lua_pop(L, 1);
+    if (tag && strlen(tag) > 0) {
+        // Calculate position for this element
+        int x = depth * 2; // 2 spaces indentation per level
+        int y = current_y;
+        
+        // For block elements, start on new line
+        if (strcmp(tag, "div") == 0 || strcmp(tag, "p") == 0 ||
+            strcmp(tag, "h1") == 0 || strcmp(tag, "h2") == 0 ||
+            strcmp(tag, "h3") == 0 || strcmp(tag, "table") == 0 ||
+            strcmp(tag, "form") == 0 || strcmp(tag, "ul") == 0 ||
+            strcmp(tag, "ol") == 0 || strcmp(tag, "li") == 0 ||
+            strcmp(tag, "menu") == 0) {
+            
+            // Move to next line for block elements
+            current_y++;
+            y = current_y;
+            x = depth * 2;
         }
-        printf("Lua elements array has %d items\n", elem_count);
-    }
-    lua_pop(L, 1);
-    
-    // ========== WRITE SIMPLE OUTPUT ==========
-    printf("\nCreating positioned output file...\n");
-    
-    // Convert Lua result back to JSON string
-    lua_getglobal(L, "tostring");
-    lua_pushvalue(L, -2); // Push the result table
-    if (lua_pcall(L, 1, 1, 0) == LUA_OK) {
-        const char* result_str = lua_tostring(L, -1);
-        if (result_str) {
-            FILE* out_f = fopen("text.html.txt_with_positions.txt", "w");
-            if (out_f) {
-                fwrite(result_str, 1, strlen(result_str), out_f);
-                fclose(out_f);
-                printf("✓ Saved Lua result to text.html.txt_with_positions.txt\n");
-                
-                // Show first 200 chars
-                printf("First 200 chars of result:\n%.200s\n", result_str);
-                
-                // Copy if needed
-                kopiraj_fajl("text.html.txt_with_positions.txt");
-            } else {
-                printf("✗ Could not create output file\n");
+        
+        // Create element display string
+        char element_str[100];
+        snprintf(element_str, sizeof(element_str), "[%s]", tag);
+        int element_width = strlen(element_str);
+        
+        // Check for overlap
+        if (check_overlap(x, y, element_width, 1, tag)) {
+            overlaps_found++;
+            // Move down to avoid overlap
+            y++;
+            current_y = y;
+        }
+        
+        // Place element in grid
+        if (y < TERMINAL_HEIGHT && x + element_width <= TERMINAL_WIDTH) {
+            memcpy(grid[y] + x, element_str, element_width);
+            
+            // Record position
+            if (pos_count < 1000) {
+                ElementPosition* pos = &positions[pos_count++];
+                pos->start_x = x;
+                pos->end_x = x + element_width;
+                pos->start_y = y;
+                pos->end_y = y + 1;
+                strncpy(pos->tag, tag, sizeof(pos->tag) - 1);
+                pos->tag[sizeof(pos->tag) - 1] = '\0';
             }
         }
-        lua_pop(L, 1);
-    } else {
-        printf("✗ Could not convert Lua result to string\n");
+        
+        // Handle text content
+        if (text && strlen(text) > 0) {
+            // Clean text
+            char clean_text[256];
+            int clean_idx = 0;
+            int last_was_space = 0;
+            
+            for (int i = 0; text[i] && clean_idx < 255; i++) {
+                if (text[i] == ' ' || text[i] == '\n' || text[i] == '\t') {
+                    if (!last_was_space && clean_idx > 0) {
+                        clean_text[clean_idx++] = ' ';
+                        last_was_space = 1;
+                    }
+                } else {
+                    clean_text[clean_idx++] = text[i];
+                    last_was_space = 0;
+                }
+            }
+            clean_text[clean_idx] = '\0';
+            
+            // Trim
+            while (clean_idx > 0 && clean_text[clean_idx-1] == ' ') {
+                clean_text[--clean_idx] = '\0';
+            }
+            
+            if (clean_idx > 0) {
+                // Position text on next line, indented more
+                current_y++;
+                int text_x = (depth + 1) * 2;
+                int text_y = current_y;
+                
+                // Split text into words for wrapping
+                char text_copy[256];
+                strcpy(text_copy, clean_text);
+                char* word = strtok(text_copy, " ");
+                
+                while (word) {
+                    int word_len = strlen(word);
+                    
+                    // Check if word fits on current line
+                    if (text_x + word_len + 1 > TERMINAL_WIDTH) {
+                        current_y++;
+                        text_y = current_y;
+                        text_x = (depth + 1) * 2;
+                    }
+                    
+                    // Add space before word (except first word)
+                    if (text_x > (depth + 1) * 2) {
+                        if (text_x < TERMINAL_WIDTH && text_y < TERMINAL_HEIGHT) {
+                            grid[text_y][text_x] = ' ';
+                            text_x++;
+                        }
+                    }
+                    
+                    // Add word to grid
+                    if (text_x + word_len <= TERMINAL_WIDTH && text_y < TERMINAL_HEIGHT) {
+                        memcpy(grid[text_y] + text_x, word, word_len);
+                        
+                        // Record text position
+                        if (pos_count < 1000) {
+                            ElementPosition* pos = &positions[pos_count++];
+                            pos->start_x = text_x;
+                            pos->end_x = text_x + word_len;
+                            pos->start_y = text_y;
+                            pos->end_y = text_y + 1;
+                            snprintf(pos->tag, sizeof(pos->tag), "%s-text", tag);
+                        }
+                        
+                        text_x += word_len;
+                    }
+                    
+                    word = strtok(NULL, " ");
+                }
+            }
+        }
+        
+        // Process children with increased depth
+        if (has_children) {
+            JSValue length_val = JS_GetPropertyStr(ctx, children_val, "length");
+            uint32_t child_count;
+            JS_ToUint32(ctx, &child_count, length_val);
+            JS_FreeValue(ctx, length_val);
+            
+            for (uint32_t i = 0; i < child_count; i++) {
+                JSValue child_val = JS_GetPropertyUint32(ctx, children_val, i);
+                position_element(child_val, depth + 1, x, y);
+                JS_FreeValue(ctx, child_val);
+            }
+        }
+        
+        // Add closing tag for block elements
+        if (strcmp(tag, "div") == 0 || strcmp(tag, "p") == 0 ||
+            strcmp(tag, "h1") == 0 || strcmp(tag, "h2") == 0 ||
+            strcmp(tag, "h3") == 0 || strcmp(tag, "table") == 0 ||
+            strcmp(tag, "form") == 0 || strcmp(tag, "ul") == 0 ||
+            strcmp(tag, "ol") == 0 || strcmp(tag, "li") == 0 ||
+            strcmp(tag, "menu") == 0) {
+            
+            current_y++;
+            int close_x = depth * 2;
+            int close_y = current_y;
+            
+            char close_str[100];
+            snprintf(close_str, sizeof(close_str), "[/%s]", tag);
+            int close_width = strlen(close_str);
+            
+            if (close_y < TERMINAL_HEIGHT && close_x + close_width <= TERMINAL_WIDTH) {
+                memcpy(grid[close_y] + close_x, close_str, close_width);
+            }
+        }
     }
     
+    JS_FreeValue(ctx, children_val);
+    
+    // Free C strings
+    if (tag) JS_FreeCString(ctx, tag);
+    if (text) JS_FreeCString(ctx, text);
+}
+
+// 6. Start positioning from root
+printf("Positioning elements on text grid...\n");
+current_y = 0; // Start at line 0
+
+// Check if it's an array or object
+int is_array = JS_IsArray(ctx, json_val);
+if (is_array) {
+    JSValue length_val = JS_GetPropertyStr(ctx, json_val, "length");
+    uint32_t element_count;
+    JS_ToUint32(ctx, &element_count, length_val);
+    JS_FreeValue(ctx, length_val);
+    
+    printf("Processing %u root elements...\n", element_count);
+    
+    for (uint32_t i = 0; i < element_count; i++) {
+        JSValue elem_val = JS_GetPropertyUint32(ctx, json_val, i);
+        position_element(elem_val, 0, 0, 0);
+        JS_FreeValue(ctx, elem_val);
+    }
 } else {
-    printf("✗ Lua didn't return a table, got: %s\n", lua_typename(L, lua_type(L, -1)));
-    
-    // Try to print what it did return
-    if (lua_isstring(L, -1)) {
-        printf("Lua returned string: %s\n", lua_tostring(L, -1));
-    } else if (lua_isnumber(L, -1)) {
-        printf("Lua returned number: %f\n", lua_tonumber(L, -1));
-    } else if (lua_isboolean(L, -1)) {
-        printf("Lua returned boolean: %s\n", lua_toboolean(L, -1) ? "true" : "false");
+    printf("Processing single root element...\n");
+    position_element(json_val, 0, 0, 0);
+}
+
+// 7. Create final output with coordinates
+FILE* final_output = fopen("text.html.final_positions.txt", "w");
+if (!final_output) {
+    printf("✗ Could not create output file\n");
+    goto cleanup;
+}
+
+printf("Writing final output with X/Y coordinates...\n");
+
+// First, write a coordinate report
+fprintf(final_output, "=== ELEMENT POSITIONS (X/Y COORDINATES) ===\n\n");
+fprintf(final_output, "Terminal: %d columns x %d lines\n\n", TERMINAL_WIDTH, TERMINAL_HEIGHT);
+fprintf(final_output, "Element positions:\n");
+fprintf(final_output, "Format: (X,Y) Width x Height  Element\n");
+fprintf(final_output, "--------------------------------------\n");
+
+// Write position summary
+for (int i = 0; i < pos_count; i++) {
+    ElementPosition* pos = &positions[i];
+    int width = pos->end_x - pos->start_x;
+    int height = pos->end_y - pos->start_y;
+    fprintf(final_output, "(%2d,%2d) %2d x %-2d  %s\n", 
+            pos->start_x, pos->start_y, width, height, pos->tag);
+}
+
+fprintf(final_output, "\n=== VISUAL LAYOUT ===\n\n");
+
+// Write the visual grid
+static int max_y_used = -1;
+for (int y = 0; y < TERMINAL_HEIGHT; y++) {
+    // Check if line has content
+    int has_content = 0;
+    for (int x = 0; x < TERMINAL_WIDTH; x++) {
+        if (grid[y][x] != ' ') {
+            has_content = 1;
+            break;
+        }
     }
     
-    // Try to write whatever we got
-    const char* result = lua_tostring(L, -1);
-    if (result) {
-        FILE* out_f = fopen("text.html.txt_with_positions.txt", "w");
-        if (out_f) {
-            fwrite(result, 1, strlen(result), out_f);
-            fclose(out_f);
-            printf("✓ Saved raw result to text.html.txt_with_positions.txt\n");
+    if (has_content) {
+        max_y_used = y;
+        
+        // Trim trailing spaces
+        int last_char = TERMINAL_WIDTH - 1;
+        while (last_char >= 0 && grid[y][last_char] == ' ') {
+            last_char--;
+        }
+        
+        if (last_char >= 0) {
+            grid[y][last_char + 1] = '\0';
+            // Show line number and content
+            fprintf(final_output, "%3d: %s\n", y, grid[y]);
         }
     }
 }
 
-free(json_str);
+fclose(final_output);
 
-lua_cleanup:
-lua_close(L);
-printf("✓ Lua cleaned up\n");
+// 8. Clean up
+cleanup:
+// Clean up grid memory
+for (int i = 0; i < TERMINAL_HEIGHT; i++) {
+    free(grid[i]);
+}
+free(grid);
 
-printf("=== STEP 8.5 COMPLETE ===\n");
+// Clean up QuickJS
+JS_FreeValue(ctx, json_val);
+JS_FreeContext(ctx);
+JS_FreeRuntime(rt);
+
+printf("✓ Position calculation complete\n");
+printf("  Total elements positioned: %d\n", pos_count);
+printf("  Grid lines with content: %d\n",
+    max_y_used < 0 ? 0 : (max_y_used + 1));
+printf("  Overlap checks: %s\n", 
+       overlaps_found == 0 ? "NO overlaps detected" : "OVERLAPS DETECTED");
+
+// 9. Create overlap report if any overlaps were found
+if (overlaps_found > 0) {
+    printf("\n⚠️  OVERLAP REPORT:\n");
+    printf("  Found %d potential overlap(s)\n", overlaps_found);
+    printf("  Check element_coordinates.txt for details\n");
+    
+    // Create detailed coordinate file
+    FILE* coord_file = fopen("element_coordinates.txt", "w");
+    if (coord_file) {
+        fprintf(coord_file, "=== ELEMENT COORDINATES ===\n\n");
+        
+        // Group by Y coordinate for readability
+        for (int y = 0; y <= max_y_used; y++) {
+            int elements_on_line = 0;
+            
+            // Count elements on this line
+            for (int i = 0; i < pos_count; i++) {
+                if (positions[i].start_y == y) elements_on_line++;
+            }
+            
+            if (elements_on_line > 0) {
+                fprintf(coord_file, "Line %d:\n", y);
+                for (int i = 0; i < pos_count; i++) {
+                    if (positions[i].start_y == y) {
+                        int width = positions[i].end_x - positions[i].start_x;
+                        int height = positions[i].end_y - positions[i].start_y;
+                        fprintf(coord_file, "  (%2d,%2d) %2d x %-2d  %s\n", 
+                                positions[i].start_x, positions[i].start_y,
+                                width, height, positions[i].tag);
+                    }
+                }
+                fprintf(coord_file, "\n");
+            }
+        }
+        
+        fclose(coord_file);
+        printf("  ✓ Created element_coordinates.txt\n");
+    }
+}
+
+// 10. Show preview
+printf("\n=== OUTPUT PREVIEW ===\n");
+FILE* preview = fopen("text.html.final_positions.txt", "r");
+if (preview) {
+    char preview_line[256];
+    int lines_shown = 0;
+    
+    printf("\nFirst 15 coordinate lines:\n");
+    while (fgets(preview_line, sizeof(preview_line), preview) && lines_shown < 15) {
+        if (strstr(preview_line, "(")) {
+            printf("%s", preview_line);
+            lines_shown++;
+        }
+    }
+    
+    rewind(preview);
+    lines_shown = 0;
+    printf("\nFirst 15 visual layout lines:\n");
+    while (fgets(preview_line, sizeof(preview_line), preview) && lines_shown < 15) {
+        if (strstr(preview_line, ":")) {
+            printf("%s", preview_line);
+            lines_shown++;
+        }
+    }
+    
+    fclose(preview);
+    printf("\n... (see text.html.final_positions.txt for full output)\n");
+}
+
+// 11. Copy if enabled
+#if KOPIRAJ
+kopiraj_fajl("element_coordinates.txt");    
+kopiraj_fajl("text.html.final_positions.txt");
+if (overlaps_found > 0) {
+    kopiraj_fajl("element_coordinates.txt");
+}
+#endif
+
+// Free positions array
+if (positions) free(positions);
+
+
+layout_cleanup:
+printf("\n=== STEP 8.5 COMPLETE ===\n");
 
     // ========== STEP 10: Cleanup ==========
     printf("\n=== STEP 10: Cleanup ===\n");
