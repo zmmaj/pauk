@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+chat:
+  integrations:
+    jira:
+      usage: enabled
+    linear:
+      usage: enabled
+knowledge_base:
+  opt_out: true
+issue_enrichment:
+  auto_enrich:
+    enabled: true
