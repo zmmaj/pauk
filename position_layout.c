@@ -48,6 +48,62 @@ static char *resolve_ref_path(const char *base_dir, const char *filename) {
     return p;
 }
 
+/* Recursively copy a node with its children */
+static cJSON *copy_node_with_children(cJSON *node) {
+    if (!node) return NULL;
+    
+    cJSON *copy = cJSON_CreateObject();
+    
+    /* Copy basic fields */
+    const char *keep[] = {"tag","text","id","href","src","alt","title",
+                         "width","height","font_size","font_family","color",
+                         "bg_color","style","class_string","form_file",
+                         "table_file","list_file","menu_file","media_type",
+                         "iframe_src","iframe_width","iframe_height",
+                         "iframe_type","type", NULL};
+    
+    for (int k = 0; keep[k]; k++) {
+        cJSON *it = cJSON_GetObjectItem(node, keep[k]);
+        if (it) {
+            cJSON_AddItemToObject(copy, keep[k], cJSON_Duplicate(it, 1));
+        }
+    }
+    
+    /* Copy layout fields */
+    cJSON *x = cJSON_GetObjectItem(node, "x");
+    cJSON *y = cJSON_GetObjectItem(node, "y");
+    cJSON *w = cJSON_GetObjectItem(node, "layout_width");
+    cJSON *h = cJSON_GetObjectItem(node, "layout_height");
+    
+    if (x && cJSON_IsNumber(x)) cJSON_AddNumberToObject(copy, "x", x->valuedouble);
+    if (y && cJSON_IsNumber(y)) cJSON_AddNumberToObject(copy, "y", y->valuedouble);
+    if (w && cJSON_IsNumber(w)) cJSON_AddNumberToObject(copy, "layout_width", w->valuedouble);
+    if (h && cJSON_IsNumber(h)) cJSON_AddNumberToObject(copy, "layout_height", h->valuedouble);
+    
+    /* Recursively copy children */
+    cJSON *children = cJSON_GetObjectItem(node, "children");
+    if (children && cJSON_IsArray(children)) {
+        cJSON *children_copy = cJSON_CreateArray();
+        int child_count = cJSON_GetArraySize(children);
+        
+        for (int i = 0; i < child_count; i++) {
+            cJSON *child = cJSON_GetArrayItem(children, i);
+            cJSON *child_copy = copy_node_with_children(child);
+            if (child_copy) {
+                cJSON_AddItemToArray(children_copy, child_copy);
+            }
+        }
+        
+        if (cJSON_GetArraySize(children_copy) > 0) {
+            cJSON_AddItemToObject(copy, "children", children_copy);
+        } else {
+            cJSON_Delete(children_copy);
+        }
+    }
+    
+    return copy;
+}
+
 /* Read estimated sizes from referenced files (table/form/list/menu etc.) */
 static int read_estimated_size_from_refs(cJSON *elem, const char *base_dir, int *out_w, int *out_h) {
     if (!elem) return 0;
@@ -140,6 +196,27 @@ static void estimate_text_size(const char *text, int font_size, int max_width, i
     free(tmp);
 }
 
+static int is_block_tag_str(const char *tag) {
+    if (!tag) return 1;
+    
+    /* Basic block elements for initial browser */
+    const char *blocks[] = { 
+        "div", "p", "h1", "h2", "h3", "h4", "h5", "h6",
+        "ul", "ol", "li", "table", "tr", "td", "th",
+        "form", "header", "footer", "article", "section", 
+        "nav", "aside", "main", "details", "figure", "figcaption",
+        "iframe", "audio", "video", "canvas",
+        "blockquote", "pre", "hr",
+        "body", "html", "head",
+        NULL 
+    };
+    
+    for (int i = 0; blocks[i]; i++) {
+        if (strcasecmp(blocks[i], tag) == 0) return 1;
+    }
+    return 0;
+}
+
 /* Helpers */
 static const char *get_string(cJSON *obj, const char *key) {
     cJSON *i = cJSON_GetObjectItem(obj, key);
@@ -152,27 +229,14 @@ static int get_int(cJSON *obj, const char *key, int default_val) {
     return default_val;
 }
 
+
+
+
 /* Forward */
 static int layout_node_recursive(cJSON *node, int x, int y, int container_width, const char *base_dir);
 
-/* Block tag detection */
-static int is_block_tag_str(const char *tag) {
-    if (!tag) return 1;
-    const char *blocks[] = { "div","p","h1","h2","h3","h4","h5","h6", "ul","ol","li","table","tr","td","th","form", "header","footer","article","section","nav","aside","main", "details","figure","figcaption","pre","blockquote", "iframe","audio","video","canvas","source","track", NULL };
-    for (int i=0; blocks[i]; i++) if (strcasecmp(blocks[i], tag) == 0) return 1;
-    return 0;
-}
 
-/* layout_inline_children:
-   children_arr: cJSON array of children
-   start_index: index in children_arr to start from
-   total_count: total number of items in children_arr
-   start_x, start_y: absolute starting coordinates
-   container_width: available width in px
-   parent_font_size: font size to use for text nodes (or 0 to use default)
-   consumed_out: out param, set to number of child items consumed from start_index
-   Returns total height used (px)
-*/
+
 static int layout_inline_children(cJSON *children_arr, int start_index, int total_count, int start_x, int start_y, int container_width, int parent_font_size, int *consumed_out) {
     if (!children_arr || !cJSON_IsArray(children_arr) || start_index >= total_count) {
         if (consumed_out) *consumed_out = 0;
@@ -183,7 +247,14 @@ static int layout_inline_children(cJSON *children_arr, int start_index, int tota
     FILE *log = fopen("/data/web/layout_log.txt", "a");
     if (!log) log = fopen("layout_log.txt", "a");
 
-    int x = start_x;
+    /* FIX: Get left margin of first element for initial positioning */
+    cJSON *first_child = cJSON_GetArrayItem(children_arr, start_index);
+    int first_margin_left = 0;
+    if (first_child) {
+        first_margin_left = get_int(first_child, "margin_left", 0);
+    }
+    
+    int x = start_x + first_margin_left;  /* Account for first element's margin */
     int y = start_y;
     int line_height = (int)ceil((parent_font_size > 0 ? parent_font_size : DEFAULT_FONT_SIZE) * LINE_HEIGHT_MULT);
     int right_bound = start_x + (container_width > 0 ? container_width : DEFAULT_VIEWPORT_WIDTH);
@@ -204,6 +275,16 @@ static int layout_inline_children(cJSON *children_arr, int start_index, int tota
             break; /* stop before block child */
         }
 
+        /* FIX: Get current element's margins */
+        int margin_left = get_int(child, "margin_left", 0);
+        int margin_right = get_int(child, "margin_right", 0);
+        int margin_top = get_int(child, "margin_top", 0);
+        
+        /* Adjust y for vertical margin */
+        if (margin_top > 0 && i == start_index) {
+            y += margin_top;
+        }
+
         cJSON *type_item = cJSON_GetObjectItem(child, "type");
         const char *child_type = (type_item && cJSON_IsString(type_item)) ? type_item->valuestring : NULL;
 
@@ -212,13 +293,22 @@ static int layout_inline_children(cJSON *children_arr, int start_index, int tota
             int fs = get_int(child, "font_size", parent_font_size > 0 ? parent_font_size : DEFAULT_FONT_SIZE);
             int tw, th;
             estimate_text_size(text, fs, right_bound - x, &tw, &th);
-            if (x + tw > right_bound) { y += line_height; x = start_x; }
+            
+            /* FIX: Check if element fits with its margins */
+            if (x + margin_left + tw + margin_right > right_bound) { 
+                y += line_height; 
+                x = start_x + margin_left;  /* Reset to start with this element's margin */
+            } else if (i > start_index) {
+                /* Add previous element's margin_right + current element's margin_left */
+                x += margin_left;
+            }
+            
             cJSON_ReplaceItemInObject(child, "x", cJSON_CreateNumber(x));
             cJSON_ReplaceItemInObject(child, "y", cJSON_CreateNumber(y));
             cJSON_ReplaceItemInObject(child, "layout_width", cJSON_CreateNumber(tw));
             cJSON_ReplaceItemInObject(child, "layout_height", cJSON_CreateNumber(th));
             if (log) fprintf(log, "  text idx=%d tag=%s -> x=%d y=%d w=%d h=%d\n", i, child_tag?child_tag:"(text)", x, y, tw, th);
-            x += tw + 1;
+            x += tw + margin_right + 1;  /* Add right margin */
             if (th > line_height) line_height = th;
         } else {
             /* element node inline (img, inline element etc.) */
@@ -236,7 +326,16 @@ static int layout_inline_children(cJSON *children_arr, int start_index, int tota
                 if (iw == 0) iw = 50;
                 if (ih == 0) ih = line_height;
             }
-            if (x + iw > right_bound) { y += line_height; x = start_x; }
+            
+            /* FIX: Check if element fits with its margins */
+            if (x + margin_left + iw + margin_right > right_bound) { 
+                y += line_height; 
+                x = start_x + margin_left;  /* Reset to start with this element's margin */
+            } else if (i > start_index) {
+                /* Add previous element's margin_right + current element's margin_left */
+                x += margin_left;
+            }
+            
             cJSON_ReplaceItemInObject(child, "x", cJSON_CreateNumber(x));
             cJSON_ReplaceItemInObject(child, "y", cJSON_CreateNumber(y));
             cJSON_ReplaceItemInObject(child, "layout_width", cJSON_CreateNumber(iw));
@@ -244,7 +343,7 @@ static int layout_inline_children(cJSON *children_arr, int start_index, int tota
             if (log) fprintf(log, "  elem idx=%d tag=%s -> x=%d y=%d w=%d h=%d (ref=%s)\n",
                              i, child_tag?child_tag:"(elem)", x, y, iw, ih,
                              (get_string(child,"src") ? get_string(child,"src") : "(no-src)"));
-            x += iw + 1;
+            x += iw + margin_right + 1;  /* Add right margin */
             if (ih > line_height) line_height = ih;
         }
         if (log) fflush(log);
@@ -262,24 +361,42 @@ static int layout_inline_children(cJSON *children_arr, int start_index, int tota
 /* Layout recursion */
 static int layout_node_recursive(cJSON *node, int x, int y, int container_width, const char *base_dir) {
     if (!node) return 0;
-    cJSON *xi = cJSON_GetObjectItem(node, "x");
-    if (!xi) cJSON_AddNumberToObject(node, "x", x); else cJSON_SetNumberValue(xi, x);
-    cJSON *yi = cJSON_GetObjectItem(node, "y");
-    if (!yi) cJSON_AddNumberToObject(node, "y", y); else cJSON_SetNumberValue(yi, y);
 
+    /* === CRITICAL FIX: Calculate parent's padded content area === */
+    int padding_left = get_int(node, "padding_left", 0);
+    int padding_top = get_int(node, "padding_top", 0);
+    int content_start_x = x + padding_left;
+    int content_start_y = y + padding_top;
+    
+    /* Set this node's position */
+    cJSON *xi = cJSON_GetObjectItem(node, "x");
+    if (!xi) cJSON_AddNumberToObject(node, "x", x); 
+    else cJSON_SetNumberValue(xi, x);
+    
+    cJSON *yi = cJSON_GetObjectItem(node, "y");
+    if (!yi) cJSON_AddNumberToObject(node, "y", y); 
+    else cJSON_SetNumberValue(yi, y);
+
+    /* Calculate this node's width */
     int layout_w = 0;
     cJSON *lw = cJSON_GetObjectItem(node, "layout_width");
-    if (lw && cJSON_IsNumber(lw) && lw->valuedouble > 0) layout_w = (int)lw->valuedouble;
-    else {
+    if (lw && cJSON_IsNumber(lw) && lw->valuedouble > 0) {
+        layout_w = (int)lw->valuedouble;
+    } else {
         const char *width_str = get_string(node, "width");
         if (width_str) {
             int px;
-            if (parse_length_to_px(width_str, container_width, &px)) layout_w = px;
+            if (parse_length_to_px(width_str, container_width, &px)) {
+                layout_w = px;
+            }
         }
     }
-    if (layout_w <= 0) layout_w = container_width > 0 ? container_width : DEFAULT_VIEWPORT_WIDTH;
+    if (layout_w <= 0) {
+        layout_w = container_width > 0 ? container_width : DEFAULT_VIEWPORT_WIDTH;
+    }
 
-    int ref_w=0, ref_h=0;
+    /* Check for referenced size files */
+    int ref_w = 0, ref_h = 0;
     if (read_estimated_size_from_refs(node, base_dir, &ref_w, &ref_h)) {
         layout_w = ref_w;
         cJSON_ReplaceItemInObject(node, "layout_width", cJSON_CreateNumber(layout_w));
@@ -287,18 +404,21 @@ static int layout_node_recursive(cJSON *node, int x, int y, int container_width,
         return ref_h;
     }
 
+    /* Handle image elements */
     cJSON *is_img = cJSON_GetObjectItem(node, "is_image");
     if (is_img && cJSON_IsTrue(is_img)) {
         const char *aw = get_string(node, "attr_width");
         const char *ah = get_string(node, "attr_height");
-        int ipw=0, iph=0;
-        if (aw && ah && parse_length_to_px(aw, container_width, &ipw) && parse_length_to_px(ah, container_width, &iph)) {
+        int ipw = 0, iph = 0;
+        if (aw && ah && parse_length_to_px(aw, container_width, &ipw) && 
+            parse_length_to_px(ah, container_width, &iph)) {
             cJSON_ReplaceItemInObject(node, "layout_width", cJSON_CreateNumber(ipw));
             cJSON_ReplaceItemInObject(node, "layout_height", cJSON_CreateNumber(iph));
             return iph;
         }
     }
 
+    /* Handle text nodes */
     const char *tag = get_string(node, "tag");
     cJSON *type_item = cJSON_GetObjectItem(node, "type");
     const char *type_str = (type_item && cJSON_IsString(type_item)) ? type_item->valuestring : NULL;
@@ -306,60 +426,78 @@ static int layout_node_recursive(cJSON *node, int x, int y, int container_width,
     if ((type_str && strcmp(type_str, "text") == 0) || (!tag || strlen(tag) == 0)) {
         const char *text = get_string(node, "text");
         int fs = get_int(node, "font_size", DEFAULT_FONT_SIZE);
-        int w,h;
+        int w, h;
         estimate_text_size(text, fs, layout_w, &w, &h);
         cJSON_ReplaceItemInObject(node, "layout_width", cJSON_CreateNumber(w));
         cJSON_ReplaceItemInObject(node, "layout_height", cJSON_CreateNumber(h));
         return h;
     }
 
+    /* Determine if this is a block element */
     int is_block = is_block_tag_str(tag);
 
     if (is_block) {
-        int cursor_y = y;
+        /* === CRITICAL: Children start at content_start_y, not raw y === */
+        int cursor_y = content_start_y;
         cJSON *children = cJSON_GetObjectItem(node, "children");
+        
         if (children && cJSON_IsArray(children)) {
             int count = cJSON_GetArraySize(children);
             for (int i = 0; i < count; i++) {
                 cJSON *child = cJSON_GetArrayItem(children, i);
                 if (!child) continue;
+                
                 const char *child_tag = get_string(child, "tag");
+                
                 if (is_block_tag_str(child_tag)) {
-                    int ch = layout_node_recursive(child, x, cursor_y, layout_w, base_dir);
-                    /* force child's x/y to parent's flow */
-                    cJSON_ReplaceItemInObject(child, "x", cJSON_CreateNumber(x));
-                    cJSON_ReplaceItemInObject(child, "y", cJSON_CreateNumber(cursor_y));
-                    cursor_y += ch;
+                    /* === FIX: Pass content_start_x, NOT x === */
+                    int child_height = layout_node_recursive(child, content_start_x, cursor_y, layout_w, base_dir);
+                    cursor_y += child_height;
                 } else {
+                    /* === FIX: Pass content_start_x, NOT x === */
                     int consumed = 0;
-                    int used_h = layout_inline_children(children, i, count, x, cursor_y, layout_w, get_int(node, "font_size", DEFAULT_FONT_SIZE), &consumed);
-                    if (consumed > 0) i += (consumed - 1);
-                    cursor_y += used_h;
+                    int used_height = layout_inline_children(children, i, count, 
+                                                           content_start_x, cursor_y, layout_w,
+                                                           get_int(node, "font_size", DEFAULT_FONT_SIZE), 
+                                                           &consumed);
+                    if (consumed > 0) {
+                        i += (consumed - 1);
+                    }
+                    cursor_y += used_height;
                 }
             }
         }
-        int used = cursor_y - y;
-        if (used <= 0) used = (int)ceil(DEFAULT_FONT_SIZE * LINE_HEIGHT_MULT);
+        
+        int used_height = cursor_y - y;
+        if (used_height <= 0) {
+            used_height = (int)ceil(DEFAULT_FONT_SIZE * LINE_HEIGHT_MULT);
+        }
+        
         cJSON_ReplaceItemInObject(node, "layout_width", cJSON_CreateNumber(layout_w));
-        cJSON_ReplaceItemInObject(node, "layout_height", cJSON_CreateNumber(used));
-        return used;
-    }
-
-    /* Inline element */
-    cJSON *children = cJSON_GetObjectItem(node, "children");
-    if (children && cJSON_IsArray(children)) {
-        int total = cJSON_GetArraySize(children);
-        int consumed = 0;
-        int used_h = layout_inline_children(children, 0, total, x, y, layout_w, get_int(node, "font_size", DEFAULT_FONT_SIZE), &consumed);
+        cJSON_ReplaceItemInObject(node, "layout_height", cJSON_CreateNumber(used_height));
+        return used_height;
+    } else {
+        /* Inline element with children */
+        cJSON *children = cJSON_GetObjectItem(node, "children");
+        if (children && cJSON_IsArray(children)) {
+            int total = cJSON_GetArraySize(children);
+            int consumed = 0;
+            /* === FIX: Pass content_start_x/content_start_y, NOT x/y === */
+            int used_height = layout_inline_children(children, 0, total, 
+                                                   content_start_x, content_start_y, layout_w,
+                                                   get_int(node, "font_size", DEFAULT_FONT_SIZE), 
+                                                   &consumed);
+            cJSON_ReplaceItemInObject(node, "layout_width", cJSON_CreateNumber(layout_w));
+            cJSON_ReplaceItemInObject(node, "layout_height", cJSON_CreateNumber(used_height));
+            return used_height;
+        }
+        
+        /* Leaf inline element */
+        int default_height = (int)ceil(DEFAULT_FONT_SIZE * LINE_HEIGHT_MULT);
         cJSON_ReplaceItemInObject(node, "layout_width", cJSON_CreateNumber(layout_w));
-        cJSON_ReplaceItemInObject(node, "layout_height", cJSON_CreateNumber(used_h));
-        return used_h;
+        cJSON_ReplaceItemInObject(node, "layout_height", cJSON_CreateNumber(default_height));
+        return default_height;
     }
-
-    int fh = (int)ceil(DEFAULT_FONT_SIZE * LINE_HEIGHT_MULT);
-    cJSON_ReplaceItemInObject(node, "layout_width", cJSON_CreateNumber(layout_w));
-    cJSON_ReplaceItemInObject(node, "layout_height", cJSON_CreateNumber(fh));
-    return fh;
 }
 
 /* Ensure every node has numeric x/y/layout_width/layout_height and assign inline X positions
@@ -367,102 +505,175 @@ static int layout_node_recursive(cJSON *node, int x, int y, int container_width,
    static void finalize_positions_recursive(cJSON *node, int parent_x, int parent_y) {
     if (!node) return;
 
-    /* Ensure node has layout fields */
+    /* STEP 1: Get this node's CURRENT position (may be set by layout_node_recursive) */
+    cJSON *xj = cJSON_GetObjectItem(node, "x");
+    cJSON *yj = cJSON_GetObjectItem(node, "y");
+    
+    int node_x, node_y;
+    
+    if (xj && cJSON_IsNumber(xj) && yj && cJSON_IsNumber(yj)) {
+        /* Node already has a position - KEEP IT! */
+        node_x = (int)xj->valuedouble;
+        node_y = (int)yj->valuedouble;
+        
+        /* If position is (0,0) and we're not at root, make it relative to parent */
+        if (node_x == 0 && node_y == 0 && (parent_x != 0 || parent_y != 0)) {
+            int padding_left = get_int(node, "padding_left", 0);
+            int padding_top = get_int(node, "padding_top", 0);
+            node_x = parent_x + padding_left;
+            node_y = parent_y + padding_top;
+            cJSON_SetNumberValue(xj, node_x);
+            cJSON_SetNumberValue(yj, node_y);
+        }
+    } else {
+        /* Node has no position - calculate relative to parent with padding */
+        int padding_left = get_int(node, "padding_left", 0);
+        int padding_top = get_int(node, "padding_top", 0);
+        node_x = parent_x + padding_left;
+        node_y = parent_y + padding_top;
+        
+        if (!xj) cJSON_AddNumberToObject(node, "x", node_x);
+        else cJSON_SetNumberValue(xj, node_x);
+        if (!yj) cJSON_AddNumberToObject(node, "y", node_y);
+        else cJSON_SetNumberValue(yj, node_y);
+    }
+
+    /* STEP 2: Get layout dimensions */
     cJSON *lw = cJSON_GetObjectItem(node, "layout_width");
     cJSON *lh = cJSON_GetObjectItem(node, "layout_height");
     int node_w = lw && cJSON_IsNumber(lw) ? (int)lw->valuedouble : DEFAULT_VIEWPORT_WIDTH;
     int node_h = lh && cJSON_IsNumber(lh) ? (int)lh->valuedouble : (int)ceil(DEFAULT_FONT_SIZE * LINE_HEIGHT_MULT);
 
-    /* Ensure node has x/y (fallback to parent) */
-    cJSON *xj = cJSON_GetObjectItem(node, "x");
-    cJSON *yj = cJSON_GetObjectItem(node, "y");
-    if (!(xj && cJSON_IsNumber(xj))) cJSON_ReplaceItemInObject(node, "x", cJSON_CreateNumber(parent_x));
-    if (!(yj && cJSON_IsNumber(yj))) cJSON_ReplaceItemInObject(node, "y", cJSON_CreateNumber(parent_y));
-
-    int node_x = (int)cJSON_GetObjectItem(node, "x")->valuedouble;
-    int node_y = (int)cJSON_GetObjectItem(node, "y")->valuedouble;
-
-    /* If no children, nothing more to do */
+    /* STEP 3: Process children - BUT DON'T OVERWRITE THEIR POSITIONS! */
     cJSON *children = cJSON_GetObjectItem(node, "children");
     if (!children || !cJSON_IsArray(children)) return;
 
-    /* Prepare inline placement state */
     int count = cJSON_GetArraySize(children);
-    int cur_x = node_x;
-    int cur_y = node_y;
+    
+    /* === CRITICAL: Start cursor at parent's padded position === */
+    int parent_padding_left = get_int(node, "padding_left", 0);
+    int parent_padding_top = get_int(node, "padding_top", 0);
+    int cur_x = node_x + parent_padding_left;  // Start at padded position!
+    int cur_y = node_y + parent_padding_top;   // Start at padded position!
+    
     int line_height = (int)ceil(DEFAULT_FONT_SIZE * LINE_HEIGHT_MULT);
     int max_width = node_w > 0 ? node_w : DEFAULT_VIEWPORT_WIDTH;
 
     for (int i = 0; i < count; i++) {
         cJSON *ch = cJSON_GetArrayItem(children, i);
         if (!ch) continue;
+        
         const char *tag = get_string(ch, "tag");
-
-        /* Determine child's layout size (fallbacks) */
-        cJSON *cw = cJSON_GetObjectItem(ch, "layout_width");
-        cJSON *chh = cJSON_GetObjectItem(ch, "layout_height");
-        int child_w = cw && cJSON_IsNumber(cw) ? (int)cw->valuedouble : 0;
-        int child_h = chh && cJSON_IsNumber(chh) ? (int)chh->valuedouble : line_height;
-
-        /* If block child -> place at node_x, node_y (stack) */
-        if (is_block_tag_str(tag)) {
-            /* ensure child's x/y are parent's x and current cursor y */
-            cJSON_ReplaceItemInObject(ch, "x", cJSON_CreateNumber(node_x));
-            cJSON_ReplaceItemInObject(ch, "y", cJSON_CreateNumber(cur_y));
-            /* recurse with the child's coordinates */
-            finalize_positions_recursive(ch, node_x, cur_y);
-            /* advance vertical cursor by child's height (use computed if present) */
-            cJSON *child_lh = cJSON_GetObjectItem(ch, "layout_height");
-            int used_h = child_lh && cJSON_IsNumber(child_lh) ? (int)child_lh->valuedouble : child_h;
-            cur_y += used_h;
-            /* reset line cursor */
-            cur_x = node_x;
+        
+        /* STEP 4: Check if child already has a position */
+        cJSON *child_x = cJSON_GetObjectItem(ch, "x");
+        cJSON *child_y = cJSON_GetObjectItem(ch, "y");
+        
+        if (child_x && cJSON_IsNumber(child_x) && child_y && cJSON_IsNumber(child_y)) {
+            /* CHILD ALREADY HAS A POSITION - RESPECT IT! */
+            int child_x_val = (int)child_x->valuedouble;
+            int child_y_val = (int)child_y->valuedouble;
+            
+            /* If position is absolute (0,0), make it relative WITH PADDING */
+            if (child_x_val == 0 && child_y_val == 0) {
+                if (is_block_tag_str(tag)) {
+                    /* === FIXED: Use parent's PADDED position for block children === */
+                    child_x_val = node_x + parent_padding_left;
+                    child_y_val = cur_y;
+                    cJSON_SetNumberValue(child_x, child_x_val);
+                    cJSON_SetNumberValue(child_y, child_y_val);
+                } else {
+                    /* For inline children, use current cursor (already padded) */
+                    child_x_val = cur_x;
+                    child_y_val = cur_y;
+                    cJSON_SetNumberValue(child_x, child_x_val);
+                    cJSON_SetNumberValue(child_y, child_y_val);
+                }
+            }
+            
+            /* Recurse with child's actual position */
+            finalize_positions_recursive(ch, child_x_val, child_y_val);
+            
+            /* Update cursor based on child type */
+            if (is_block_tag_str(tag)) {
+                cJSON *child_h = cJSON_GetObjectItem(ch, "layout_height");
+                int child_height = child_h && cJSON_IsNumber(child_h) ? (int)child_h->valuedouble : line_height;
+                cur_y += child_height;
+                
+                /* === FIXED: Reset to parent's PADDED position === */
+                cur_x = node_x + parent_padding_left;
+            } else {
+                cJSON *child_w = cJSON_GetObjectItem(ch, "layout_width");
+                int child_width = child_w && cJSON_IsNumber(child_w) ? (int)child_w->valuedouble : 100;
+                cur_x += child_width + 1;
+                
+                /* Handle line wrapping */
+                if (cur_x > (node_x + parent_padding_left) + max_width) {
+                    cur_y += line_height;
+                    /* === FIXED: Wrap to parent's PADDED position === */
+                    cur_x = node_x + parent_padding_left;
+                }
+            }
         } else {
-/* Inline child: ensure a usable width */
-if (child_w <= 0) {
-    /* try to derive width from tag/text */
-    if (get_string(ch, "text")) {
-        int tw, th;
-        estimate_text_size(get_string(ch, "text"),
-                           get_int(ch, "font_size", DEFAULT_FONT_SIZE),
-                           max_width, &tw, &th);
-        child_w = tw;
-        child_h = th;
-    } else {
-        /* fallback width for images/media/unknown inline items */
-        child_w = 100;
-        /* ensure a reasonable height too */
-        if (child_h <= 0) child_h = line_height;
-    }
-}
+            /* Child has no position - calculate one */
+            cJSON *cw = cJSON_GetObjectItem(ch, "layout_width");
+            cJSON *chh = cJSON_GetObjectItem(ch, "layout_height");
+            int child_w = cw && cJSON_IsNumber(cw) ? (int)cw->valuedouble : 0;
+            int child_h = chh && cJSON_IsNumber(chh) ? (int)chh->valuedouble : line_height;
 
-            /* Wrap if exceed parent's width */
-            if (cur_x + child_w > node_x + max_width) {
-                cur_y += line_height;
-                cur_x = node_x;
+            if (child_w <= 0) {
+                if (get_string(ch, "text")) {
+                    int tw, th;
+                    estimate_text_size(get_string(ch, "text"),
+                                       get_int(ch, "font_size", DEFAULT_FONT_SIZE),
+                                       max_width, &tw, &th);
+                    child_w = tw;
+                    child_h = th;
+                } else {
+                    child_w = 100;
+                    if (child_h <= 0) child_h = line_height;
+                }
             }
 
-                     /* Force inline child's absolute position to current inline cursor */
-                     cJSON_ReplaceItemInObject(ch, "x", cJSON_CreateNumber(cur_x));
-                     cJSON_ReplaceItemInObject(ch, "y", cJSON_CreateNumber(cur_y));
-         
-                     /* Recurse with these coordinates */
-                     finalize_positions_recursive(ch, cur_x, cur_y);
-         
-                     /* Advance horizontal cursor */
-                     cur_x += child_w + 1;
-            /* update line_height if child's height bigger */
-            cJSON *child_lh = cJSON_GetObjectItem(ch, "layout_height");
-            if (child_lh && cJSON_IsNumber(child_lh)) {
-                int chh_val = (int)child_lh->valuedouble;
-                if (chh_val > line_height) line_height = chh_val;
-            } else if (child_h > line_height) {
-                line_height = child_h;
+            if (is_block_tag_str(tag)) {
+                /* === FIXED: Block child positioning WITH PARENT PADDING === */
+                int block_child_x = node_x + parent_padding_left;  // ADD PADDING!
+                cJSON_AddNumberToObject(ch, "x", block_child_x);
+                cJSON_AddNumberToObject(ch, "y", cur_y);
+                
+                /* Recurse with PADDED position */
+                finalize_positions_recursive(ch, block_child_x, cur_y);
+                
+                cJSON *child_lh = cJSON_GetObjectItem(ch, "layout_height");
+                int used_h = child_lh && cJSON_IsNumber(child_lh) ? (int)child_lh->valuedouble : child_h;
+                cur_y += used_h;
+                
+                /* === FIXED: Reset to parent's PADDED position === */
+                cur_x = node_x + parent_padding_left;
+            } else {
+                /* Inline child positioning */
+                /* === FIXED: Use parent's PADDED position for bounds check === */
+                if (cur_x + child_w > (node_x + parent_padding_left) + max_width) {
+                    cur_y += line_height;
+                    /* === FIXED: Wrap to parent's PADDED position === */
+                    cur_x = node_x + parent_padding_left;
+                }
+                
+                cJSON_AddNumberToObject(ch, "x", cur_x);
+                cJSON_AddNumberToObject(ch, "y", cur_y);
+                
+                finalize_positions_recursive(ch, cur_x, cur_y);
+                
+                cur_x += child_w + 1;
+                
+                if (child_h > line_height) {
+                    line_height = child_h;
+                }
             }
         }
     }
 
-    /* Update parent's layout height to include used space (if larger than before) */
+    /* Update parent's layout height if needed */
     int total_used = (cur_y - node_y) + line_height;
     if (total_used > node_h) {
         cJSON_ReplaceItemInObject(node, "layout_height", cJSON_CreateNumber(total_used));
@@ -643,7 +854,7 @@ int calculate_text_positions(const char *input_json_path, const char *output_jso
                 /* Simpler: duplicate entire child and then remove non-kept keys is more work; instead reuse recursion */
                 /* We'll call a quick recursive trim function here by reusing logic above - implement simple recursion */
                 /* For brevity, duplicate child with cJSON_Duplicate and then leave it as-is (it's okay to include extra fields) */
-                cJSON *dup = cJSON_Duplicate(ch, 1);
+                cJSON *dup = copy_node_with_children(ch);
                 cJSON_AddItemToArray(arr, dup);
             }
             if (cJSON_GetArraySize(arr) > 0) cJSON_AddItemToObject(out, "children", arr);
