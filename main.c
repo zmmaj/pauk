@@ -3807,7 +3807,7 @@ if (!layout_ok) {
     printf("Layout calculated: %s\n", pos_output);
     /* copy outputs to /data/web if kopiraj_fajl is enabled */
     kopiraj_fajl(pos_output);
-    kopiraj_fajl("text.html.final_positions.txt");
+ 
 }
 
 // Jump to existing cleanup code (layout_cleanup label exists later)
