@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2020 Jiri Svoboda
+# Copyright (c) 2026 Zmaj from ZmajSoft
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
