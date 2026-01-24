@@ -55,6 +55,7 @@ src = files(
 	'lua_position.c',
 	'position_layout.c',
 	'gui.c',
+	'font_manager.c',
 	
 )
 
