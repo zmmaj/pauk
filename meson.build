@@ -53,6 +53,8 @@ src = files(
 	'render_output.c',
 	'layout_calculator.c',
 	'lua_position.c',
+	'position_layout.c',
+	'gui.c',
 	
 )
 
