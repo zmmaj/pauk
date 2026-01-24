@@ -5,6 +5,11 @@
 #include <errno.h>
 #include <lexbor/html/html.h>
 #include <lexbor/dom/dom.h>
+
+#include <gfx/bitmap.h>
+#include <gfx/render.h>
+#include <gfx/context.h>
+
 #include "cjson.h"
 #include "css_parser.h"
 #include "js_executor_quickjs.h"
@@ -3091,14 +3096,7 @@ int main(int argc, char *argv[]) {
     }
     
     if(INFO_MESSAGES) printf("HTML parsed successfully\n");
-    // ========== STEP 1 GUI ===========================
-   
-    start_gui();
 
-
-
-
-    // =========== END GUI =============================
 
 
     // ========== STEP 2: Initialize CSS Parser ==========
@@ -3826,11 +3824,11 @@ goto layout_cleanup;
 layout_cleanup:
 if(INFO_MESSAGES) printf("\n=== STEP 8.5 COMPLETE ===\n");
 
-//====================== POKRENI UI ======================
+     // ========== STEP 9 GUI ===========================
+  
+     start_gui();
 
-//run_ui(&pauk_ui);
-
-//====================== KRAJ POKRENI UI ======================  
+     // =========== END GUI =============================
 
 
     // ========== STEP 10: Cleanup ==========
@@ -3876,6 +3874,9 @@ cleanup_menus_storage();
     
     if(INFO_MESSAGES) printf("\n=== PROCESSING COMPLETE ===\n");
     printf("Clean rendering output written to: %s\n", output_file);
+
+
+
     
     return 0;
 }
