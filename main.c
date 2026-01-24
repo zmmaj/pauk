@@ -23,6 +23,8 @@
 #include "lua_position.h"
 #include "position_layout.h"
 
+#include "gui.h"
+
 
 static cJSON *global_computed_layout = NULL;
 static DocumentOutline global_document_outline;
@@ -545,7 +547,7 @@ cJSON* build_document_hierarchy(lxb_html_document_t* document) {
     }
     
     if (body_element) {
-        printf("Found body element, starting hierarchy...\n");
+    if(INFO_MESSAGES) printf("Found body element, starting hierarchy...\n");
         
         // Create body element JSON
         cJSON* body_json = element_to_rendering_json(body_element, 0);
@@ -590,14 +592,14 @@ cJSON* build_document_hierarchy(lxb_html_document_t* document) {
                         
                         cJSON_AddItemToArray(body_children, child_json);
                         
-                        printf("  Added child <%s> id=%d to body\n", 
+                        if(INFO_MESSAGES) printf("  Added child <%s> id=%d to body\n", 
                                lxb_dom_element_tag_name(child_elem, NULL), child_id);
                     }
                 }
                 child = child->next;
             }
             
-            printf("✓ Hierarchy built with %d total elements\n", element_counter - 1);
+            if(INFO_MESSAGES)  printf("✓ Hierarchy built with %d total elements\n", element_counter - 1);
         }
     } else {
         printf("No body element found\n");
@@ -762,7 +764,7 @@ cJSON* process_node_for_rendering(lxb_dom_node_t *node, int depth) {
 
 // Main function to generate rendering output
 int generate_rendering_output(const char *html_file, const char *output_file) {
-    printf("Generating rendering output: %s -> %s\n", html_file, output_file);
+    if(INFO_MESSAGES) printf("Generating rendering output: %s -> %s\n", html_file, output_file);
     
     // Parse HTML
     FILE *f = fopen(html_file, "rb");
@@ -856,7 +858,7 @@ int generate_rendering_output(const char *html_file, const char *output_file) {
             free(json_str);
         }
         fclose(out_file);
-        printf("Rendering output written to: %s\n", output_file);
+        if(INFO_MESSAGES)  printf("Rendering output written to: %s\n", output_file);
         kopiraj_fajl(output_file);
     } else {
         printf("ERROR: Could not open output file\n");
@@ -3027,9 +3029,8 @@ void merge_layout_with_element(cJSON *elem_json, cJSON *layout_data) {
 }
 
 
-
 int main(int argc, char *argv[]) {
-    printf("=== HTML RENDERER OUTPUT GENERATOR ===\n");
+    if(INFO_MESSAGES) printf("=== HTML RENDERER OUTPUT GENERATOR ===\n");
     
     if (argc < 2) {
         printf("Usage: %s <input.html> [output.txt]\n", argv[0]);
@@ -3050,7 +3051,7 @@ int main(int argc, char *argv[]) {
     printf("Output: %s\n", output_file);
     
     // ========== STEP 1: Parse HTML ==========
-    printf("\n=== STEP 1: Parse HTML Document ===\n");
+    if(INFO_MESSAGES) printf("\n=== STEP 1: Parse HTML Document ===\n");
     
     FILE *f = fopen(html_file, "rb");
     if (!f) {
@@ -3089,28 +3090,37 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     
-    printf("HTML parsed successfully\n");
-    
+    if(INFO_MESSAGES) printf("HTML parsed successfully\n");
+    // ========== STEP 1 GUI ===========================
+   
+    start_gui();
+
+
+
+
+    // =========== END GUI =============================
+
+
     // ========== STEP 2: Initialize CSS Parser ==========
-    printf("\n=== STEP 2: Initialize CSS Parser ===\n");
+    if(INFO_MESSAGES)   printf("\n=== STEP 2: Initialize CSS Parser ===\n");
     if (!css_parser_init()) {
         printf("WARNING: CSS parser initialization failed (continuing without CSS)\n");
     } else {
-        printf("CSS parser initialized\n");
+        if(INFO_MESSAGES)  printf("CSS parser initialized\n");
     }
     
     // ========== STEP 2.5: Initialize Document Outline ==========
-printf("\n=== STEP 2.5: Initialize Document Outline ===\n");
+    if(INFO_MESSAGES) printf("\n=== STEP 2.5: Initialize Document Outline ===\n");
 init_document_outline(&global_document_outline);
-printf("Document outline tracker initialized\n");
+if(INFO_MESSAGES) printf("Document outline tracker initialized\n");
 
     // ========== STEP 3: Initialize Event Handler ==========
-    printf("\n=== STEP 3: Initialize Event Handler ===\n");
+    if(INFO_MESSAGES)printf("\n=== STEP 3: Initialize Event Handler ===\n");
     event_handler_init();
-    printf("Event handler initialized\n");
+    if(INFO_MESSAGES) printf("Event handler initialized\n");
     
 // ========== STEP 4: Initialize JavaScript (Optional) ==========
-printf("\n=== STEP 4: Initialize JavaScript ===\n");
+if(INFO_MESSAGES)printf("\n=== STEP 4: Initialize JavaScript ===\n");
 int enable_js = 1; // Set to 0 to disable JavaScript
 JSContext *js_ctx = NULL;
 cJSON *js_modifications = NULL;  // Add this variable
@@ -3118,7 +3128,7 @@ cJSON *js_modifications = NULL;  // Add this variable
 if (enable_js) {
     js_ctx = js_engine_init();
     if (js_ctx) {
-        printf("JavaScript engine initialized\n");
+        if(INFO_MESSAGES) printf("JavaScript engine initialized\n");
         
         // Set security policy
         SecurityPolicy policy = js_default_security_policy();
@@ -3137,22 +3147,22 @@ if (enable_js) {
             int mod_count = 0;
             cJSON *element;
             
-            printf("JavaScript modifications:\n");
+            if(INFO_MESSAGES)  printf("JavaScript modifications:\n");
             cJSON_ArrayForEach(element, js_modifications) {
                 mod_count++;
-                printf("  - Element '%s' modified by JS\n", element->string);
+                if(INFO_MESSAGES)   printf("  - Element '%s' modified by JS\n", element->string);
             }
             
-            printf("Total: %d modifications\n", mod_count);
+            if(INFO_MESSAGES) printf("Total: %d modifications\n", mod_count);
             
             // We'll store this in rendering_output LATER, after it's created
             // Just keep js_modifications for now
         } else {
-            printf("No JavaScript modifications detected\n");
+            if(INFO_MESSAGES) printf("No JavaScript modifications detected\n");
         }
         // ==================================================
         
-        printf("JavaScript execution completed\n");
+        if(INFO_MESSAGES) printf("JavaScript execution completed\n");
     } else {
         printf("WARNING: JavaScript engine initialization failed (continuing without JS)\n");
     }
@@ -3161,11 +3171,11 @@ if (enable_js) {
 }
     
     // ========== STEP 5: Calculate Layout ==========
-    printf("\n=== STEP 5: Calculate Layout ===\n");
+    if(INFO_MESSAGES) printf("\n=== STEP 5: Calculate Layout ===\n");
     cJSON *computed_layout = calculate_document_layout(doc);
     
     if (computed_layout) {
-        printf("Layout calculated successfully\n");
+        if(INFO_MESSAGES) printf("Layout calculated successfully\n");
         
         // Store globally for element processing
         if (global_computed_layout) {
@@ -3177,21 +3187,21 @@ if (enable_js) {
         cJSON *elements = cJSON_GetObjectItem(computed_layout, "elements");
         if (elements) {
             int count = cJSON_GetArraySize(elements);
-            printf("Layout contains %d positioned elements\n", count);
+            if(INFO_MESSAGES)  printf("Layout contains %d positioned elements\n", count);
         }
     } else {
         printf("WARNING: Layout calculation failed (using default positions)\n");
     }
     
     // ========== STEP 6: Process Events ==========
-    printf("\n=== STEP 6: Process Events ===\n");
+    if(INFO_MESSAGES) printf("\n=== STEP 6: Process Events ===\n");
     lxb_dom_node_t *root = lxb_dom_interface_node(doc);
     process_events_recursive(root);
     int event_count = get_event_handler_count();
-    printf("Found %d event handler(s)\n", event_count);
+    if(INFO_MESSAGES)  printf("Found %d event handler(s)\n", event_count);
     
     // ========== STEP 7: Build Clean Rendering Output ==========
-    printf("\n=== STEP 7: Build Rendering Output ===\n");
+    if(INFO_MESSAGES) printf("\n=== STEP 7: Build Rendering Output ===\n");
     
     // Create root array for rendering output
     cJSON *rendering_output = cJSON_CreateArray();
@@ -3216,7 +3226,7 @@ if (js_modifications) {
         
         if (body_count > 0) {
             body = lxb_dom_collection_element(body_coll, 0);
-            printf("Found body element\n");
+            if(INFO_MESSAGES)   printf("Found body element\n");
         }
         
         lxb_dom_collection_destroy(body_coll, true);
@@ -3283,7 +3293,7 @@ if (js_modifications) {
             child = lxb_dom_node_next(child);
         }
         
-        printf("Processed %d body children for rendering\n", child_count);
+        if(INFO_MESSAGES) printf("Processed %d body children for rendering\n", child_count);
         
         if (child_count > 0) {
             cJSON_AddItemToObject(body_json, "children", children_array);
@@ -3293,7 +3303,7 @@ if (js_modifications) {
         
         cJSON_AddItemToArray(rendering_output, body_json);
     } else {
-        printf("ERROR: No body element found\n");
+        if(INFO_MESSAGES) printf("ERROR: No body element found\n");
         
         // Create empty body as fallback
         cJSON *empty_body = cJSON_CreateObject();
@@ -3307,12 +3317,12 @@ if (js_modifications) {
         cJSON_AddItemToArray(rendering_output, empty_body);
     }
     // ========== EXTRACT TABLES TO SEPARATE FILES ==========
-    printf("\n=== EXTRACTING TABLES TO SEPARATE FILES ===\n");
+    if(INFO_MESSAGES) printf("\n=== EXTRACTING TABLES TO SEPARATE FILES ===\n");
 
     int table_count = get_table_count();  // Use getter
     
     if (table_count > 0) {
-        printf("Found %d table(s) to extract\n", table_count);
+        if(INFO_MESSAGES)   printf("Found %d table(s) to extract\n", table_count);
         
         // Create array for table references in the main output
         cJSON *table_references = cJSON_CreateArray();
@@ -3323,7 +3333,7 @@ if (js_modifications) {
             
             if (!filename || !table_elem) continue;  // Safety check
             
-            printf("Processing table %d: %s\n", i + 1, filename);  // Use filename variable
+            if(INFO_MESSAGES)  printf("Processing table %d: %s\n", i + 1, filename);  // Use filename variable
             
             // Extract table structure
             cJSON *table_json = extract_table_structure(table_elem);  // Use table_elem variable
@@ -3395,7 +3405,7 @@ if (table_file) {
         // Add to rendering output
         cJSON_AddItemToArray(rendering_output, tables_wrapper);
         
-        printf("Added %d table references to output\n", cJSON_GetArraySize(table_references));
+        if(INFO_MESSAGES)  printf("Added %d table references to output\n", cJSON_GetArraySize(table_references));
     } else {
         cJSON_Delete(table_references);
     }
@@ -3403,17 +3413,17 @@ if (table_file) {
 
     
 } else {
-    printf("No tables found in document\n");
+    if(INFO_MESSAGES) printf("No tables found in document\n");
 }
 // ========== END TABLE EXTRACTION ==========
 
 // ========== EXTRACT FORMS TO SEPARATE FILES ==========
-printf("\n=== EXTRACTING FORMS TO SEPARATE FILES ===\n");
+if(INFO_MESSAGES) printf("\n=== EXTRACTING FORMS TO SEPARATE FILES ===\n");
 
 int form_count = get_form_count();  // Use getter
 
 if (form_count > 0) {
-    printf("Found %d form(s) to extract\n", form_count);
+    if(INFO_MESSAGES) printf("Found %d form(s) to extract\n", form_count);
     
     // Create array for form references in the main output
     cJSON *form_references = cJSON_CreateArray();
@@ -3424,7 +3434,7 @@ if (form_count > 0) {
         
         if (!filename || !form_elem) continue;
         
-        printf("Processing form %d: %s\n", i + 1, filename);
+        if(INFO_MESSAGES)  printf("Processing form %d: %s\n", i + 1, filename);
         
         // Extract form structure
         cJSON *form_json = extract_form_structure(form_elem);
@@ -3488,18 +3498,18 @@ if (form_count > 0) {
         cJSON_Delete(form_references);
     }
 } else {
-    printf("No forms found in document\n");
+    if(INFO_MESSAGES) printf("No forms found in document\n");
 }
 // ========== END FORM EXTRACTION ==========
 
 
 // ========== EXTRACT LISTS TO SEPARATE FILES ==========
-printf("\n=== EXTRACTING LISTS TO SEPARATE FILES ===\n");
+if(INFO_MESSAGES) printf("\n=== EXTRACTING LISTS TO SEPARATE FILES ===\n");
 
 int list_count = get_list_count();
 
 if (list_count > 0) {
-    printf("Found %d list(s) to extract\n", list_count);
+    if(INFO_MESSAGES) printf("Found %d list(s) to extract\n", list_count);
     
     // Create array for list references in the main output
     cJSON *list_references = cJSON_CreateArray();
@@ -3597,17 +3607,17 @@ if (list_count > 0) {
     }
     
 } else {
-    printf("No lists found in document\n");
+    if(INFO_MESSAGES) printf("No lists found in document\n");
 }
 // ========== END LIST EXTRACTION ==========
 
 // ========== EXTRACT MENUS TO SEPARATE FILES ==========
-printf("\n=== EXTRACTING MENUS TO SEPARATE FILES ===\n");
+if(INFO_MESSAGES) printf("\n=== EXTRACTING MENUS TO SEPARATE FILES ===\n");
 
 int menu_count = get_menu_count();
 
 if (menu_count > 0) {
-    printf("Found %d menu(s) to extract\n", menu_count);
+    if(INFO_MESSAGES) printf("Found %d menu(s) to extract\n", menu_count);
     
     // Create array for menu references in the main output
     cJSON *menu_references = cJSON_CreateArray();
@@ -3619,7 +3629,7 @@ if (menu_count > 0) {
         
         if (!filename || !menu_elem || !menu_type) continue;
         
-        printf("Processing menu %d: %s (%s)\n", i + 1, filename, menu_type);
+        if(INFO_MESSAGES)  printf("Processing menu %d: %s (%s)\n", i + 1, filename, menu_type);
         
         // Extract menu structure
         cJSON *menu_json = extract_menu_structure(menu_elem);
@@ -3759,13 +3769,13 @@ if (menu_count > 0) {
         // Add to rendering output
         cJSON_AddItemToArray(rendering_output, menus_wrapper);
         
-        printf("Added %d menu references to output\n", cJSON_GetArraySize(menu_references));
+        if(INFO_MESSAGES) printf("Added %d menu references to output\n", cJSON_GetArraySize(menu_references));
     } else {
         cJSON_Delete(menu_references);
     }
     
 } else {
-    printf("No menus found in document\n");
+    if(INFO_MESSAGES) printf("No menus found in document\n");
 }
 
     // ========== STEP 8: Write Output ==========
@@ -3775,7 +3785,7 @@ if (menu_count > 0) {
         char *json_str = cJSON_Print(rendering_output);
         if (json_str) {
             size_t written = fwrite(json_str, 1, strlen(json_str), out_file);
-            printf("Wrote %zu bytes to %s\n", written, output_file);
+            if(INFO_MESSAGES)  printf("Wrote %zu bytes to %s\n", written, output_file);
             free(json_str);
         } else {
             printf("ERROR: Failed to generate JSON string\n");
@@ -3788,13 +3798,13 @@ if (menu_count > 0) {
         // Print to console as fallback
         char *json_str = cJSON_Print(rendering_output);
         if (json_str) {
-            printf("\nRendering Output:\n%s\n", json_str);
+            if(INFO_MESSAGES)  printf("\nRendering Output:\n%s\n", json_str);
             free(json_str);
         }
     }
     
 // ========== STEP 8.5: Calculate X/Y Positions for Text Layout ==========
-printf("\n=== STEP 8.5: Calculate X/Y Positions (C) ===\n");
+if(INFO_MESSAGES) printf("\n=== STEP 8.5: Calculate X/Y Positions (C) ===\n");
 
 /* Use the file produced by Step 8 (text.html.txt). */
 const char *pos_input = "text.html.txt";
@@ -3802,9 +3812,9 @@ const char *pos_output = "text.html.final_positions.txt";
 
 int layout_ok = calculate_text_positions(pos_input, pos_output);
 if (!layout_ok) {
-    printf("WARNING: calculate_text_positions failed for %s\n", pos_input);
+    if(INFO_MESSAGES)  printf("WARNING: calculate_text_positions failed for %s\n", pos_input);
 } else {
-    printf("Layout calculated: %s\n", pos_output);
+    if(INFO_MESSAGES) printf("Layout calculated: %s\n", pos_output);
     /* copy outputs to /data/web if kopiraj_fajl is enabled */
     kopiraj_fajl(pos_output);
  
@@ -3814,12 +3824,19 @@ if (!layout_ok) {
 goto layout_cleanup;
 
 layout_cleanup:
-printf("\n=== STEP 8.5 COMPLETE ===\n");
+if(INFO_MESSAGES) printf("\n=== STEP 8.5 COMPLETE ===\n");
+
+//====================== POKRENI UI ======================
+
+//run_ui(&pauk_ui);
+
+//====================== KRAJ POKRENI UI ======================  
+
 
     // ========== STEP 10: Cleanup ==========
-    printf("\n=== STEP 10: Cleanup ===\n");
+    if(INFO_MESSAGES) printf("\n=== STEP 10: Cleanup ===\n");
     
-    cleanup_tables_storage();
+ cleanup_tables_storage();
 
 //ocisti forme
 cleanup_forms_storage();
@@ -3834,7 +3851,7 @@ cleanup_menus_storage();
     // Cleanup JavaScript
     if (js_ctx) {
         js_engine_cleanup(js_ctx);
-        printf("JavaScript engine cleaned up\n");
+        if(INFO_MESSAGES)  printf("JavaScript engine cleaned up\n");
     }
     
     // Cleanup layout data
@@ -3857,7 +3874,7 @@ cleanup_menus_storage();
     // Cleanup document
     lxb_html_document_destroy(doc);
     
-    printf("\n=== PROCESSING COMPLETE ===\n");
+    if(INFO_MESSAGES) printf("\n=== PROCESSING COMPLETE ===\n");
     printf("Clean rendering output written to: %s\n", output_file);
     
     return 0;
