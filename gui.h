@@ -35,6 +35,7 @@
 #include <ui/scrollbar.h>
 #include <ui/window.h>
 
+#include "font_manager.h"
 
 // Common definitions
 #define NAME "pauk"
@@ -78,7 +79,7 @@ typedef struct {
 
 typedef struct {
     gfx_context_t *gc;
-   // font_manager_t *font_manager;
+    font_manager_t *font_manager;
    // html_document_t *document;  // ← CHANGED
     int scroll_y;
     int view_width;
@@ -256,6 +257,8 @@ typedef struct {
     
     char current_search_engine[32];
 
+    // Font manager
+    font_manager_t font_manager;
     html_renderer_t *html_renderer;
     bool use_html_rendering;
 
@@ -275,6 +278,8 @@ typedef struct {
     char *body;
     size_t size;
 } email_t;
+
+
 
 //pauk_ui_t *global_pauk_ui = NULL;
 // Color definitions for title styling
@@ -304,8 +309,9 @@ void wnd_close(ui_window_t *window, void *arg);
 void file_exit(ui_menu_entry_t *mentry, void *arg);
 void help_about(ui_menu_entry_t *mentry, void *arg);
 
-//errno_t html_renderer_init(html_renderer_t *renderer, gfx_context_t *gc, 
- //   font_manager_t *font_manager)
+errno_t html_renderer_init(html_renderer_t *renderer, gfx_context_t *gc, 
+    font_manager_t *font_manager);
+
  void help_about(ui_menu_entry_t *mentry, void *arg);
 
 
