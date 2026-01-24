@@ -17,13 +17,18 @@
 #include <gfximage/tga.h>
 
 #include "gui.h"
+#include "font_manager.h"
 
-
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "stb_truetype.h"
 
 pauk_ui_t *global_pauk_ui = NULL;
 //definicije
 static void handle_keyboard_event(ui_window_t *window, void *arg, kbd_event_t *event);
 
+static errno_t create_color(uint16_t r, uint16_t g, uint16_t b, gfx_color_t **color) {
+    return gfx_color_new_rgb_i16(r, g, b, color);
+}
 
 static ui_scrollbar_cb_t scrollbar_cb = {
     .up = NULL, //scrollbar_up
@@ -112,8 +117,9 @@ void start_gui(void)
         return;
     }
     else{ printf("start gui pokrenut.\n");}
+    gfx_update(global_pauk_ui->gc);
     run_ui(&pauk_ui);
-
+   
 }
 
 
@@ -595,9 +601,6 @@ pauk_ui->tab_rect.p1.y = 585 - STATUS_HEIGHT + pauk_ui->globY;
 ui_tab_set_set_rect(pauk_ui->tabset, &pauk_ui->tab_rect);
 pauk_ui->tab_rect_base = pauk_ui->tab_rect;
 
-// Calculate tab content area dimensions
-//gfx_coord_t tab_width = rect.p1.x - rect.p0.x;
-//gfx_coord_t tab_height = rect.p1.y - rect.p0.y;
 
 // Add tabset control to fixed layout (window-level fixed)
 ui_control_t *tabset_control = ui_tab_set_ctl(pauk_ui->tabset);
@@ -1179,14 +1182,14 @@ pauk_ui->settings_fixed = settings_fixed;
 
 
 // HTML INIT START
-//font_manager_init(&pauk_ui->font_manager);
-//font_manager_load_fonts(&pauk_ui->font_manager, "/data/font/");
+font_manager_init(&pauk_ui->font_manager);
+font_manager_load_fonts(&pauk_ui->font_manager, "/data/font/");
 
-//font_manager_init_substitutions(&pauk_ui->font_manager);
+font_manager_init_substitutions(&pauk_ui->font_manager);
 
 pauk_ui->html_renderer = malloc(sizeof(html_renderer_t));
-//if (pauk_ui->html_renderer) {
-  //  html_renderer_init(pauk_ui->html_renderer, pauk_ui->gc, &pauk_ui->font_manager);
+if (pauk_ui->html_renderer) {
+    html_renderer_init(pauk_ui->html_renderer, pauk_ui->gc, &pauk_ui->font_manager);
     
     // Create the HTML renderer's bitmap
     gfx_rect_t large_bitmap_rect = {
@@ -1200,12 +1203,12 @@ pauk_ui->html_renderer = malloc(sizeof(html_renderer_t));
     
     // CRITICAL: Convert bitmap to UI image but use the normal display area
     if (pauk_ui->html_renderer->content_bitmap) {
-/*
-        ui_resource_t *ui_res = ui_window_get_res(pauk_ui->window);
+
+       ui_resource_t *ui_res = ui_window_get_res(pauk_ui->window);
     
         // Display the bitmap at the tab position (same as bitmap creation)
         gfx_rect_t display_rect = pauk_ui->list_rect; // This should match the tab area
-        
+       
       rc = ui_image_create(ui_res, pauk_ui->html_renderer->content_bitmap, 
                             &display_rect, &pauk_ui->content_image);
         if (rc == EOK) {
@@ -1220,9 +1223,9 @@ pauk_ui->html_renderer = malloc(sizeof(html_renderer_t));
                 if (DEB_BITMAP){ printf("Successfully added large bitmap to browser tab\n");}
             }
         }
-        */
+        
     }
-//}
+}
 
 pauk_ui->use_html_rendering = true;
 // HTML INIT KRAJ
@@ -1271,10 +1274,10 @@ errno_t html_renderer_create_bitmap(html_renderer_t *renderer, gfx_rect_t rect) 
         printf("Failed to allocate %zu bytes for bitmap\n", bitmap_size);
         return ENOMEM;
     }
-    
+    printf("Alokacija Zavrsena.\n");
     // Initialize bitmap to white background
     memset(alloc.pixels, 0xFF, bitmap_size); // 0xFF = white in ARGB
-    
+    printf("Alokacija Pixela za bitmap boju zavrsena.\n");
     // Create bitmap using our allocated memory
     errno_t rc = gfx_bitmap_create(renderer->gc, &params, &alloc, &renderer->content_bitmap);
     if (rc != EOK) {
@@ -1282,7 +1285,8 @@ errno_t html_renderer_create_bitmap(html_renderer_t *renderer, gfx_rect_t rect) 
         free(alloc.pixels);
         return rc;
     }
-    
+    printf("Bitmapa napravljena.\n");
+    // Set bitmap parameters
     renderer->bitmap_rect = params.rect;
     renderer->view_width = width;
     renderer->view_height = height;
@@ -1302,7 +1306,7 @@ void file_exit(ui_menu_entry_t *mentry, void *arg)
 }
 
 
-/*
+
 errno_t html_renderer_init(html_renderer_t *renderer, gfx_context_t *gc, 
     font_manager_t *font_manager) {
 memset(renderer, 0, sizeof(html_renderer_t));
@@ -1334,7 +1338,7 @@ return ENOMEM;
 }
 
 renderer->link_style.background_color = NULL; // Transparent background
-//renderer->link_style.font_index = font_manager->default_font_index;
+renderer->link_style.font_index = font_manager->default_font_index;
 renderer->link_style.size = 16;
 renderer->link_style.bold = false;
 renderer->link_style.italic = false;
@@ -1342,7 +1346,7 @@ renderer->link_style.underline = true;
 
 return EOK;
 }
-*/
+
 
 
 void help_about(ui_menu_entry_t *mentry, void *arg)
