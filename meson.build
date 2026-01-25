@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2026 Zmaj from ZmajSoft
+# Copyright (c) 2020 Jiri Svoboda
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -54,6 +54,7 @@ src = files(
 	'layout_calculator.c',
 	'lua_position.c',
 	'position_layout.c',
+	'render_func.c',
 	'gui.c',
 	'font_manager.c',
 	
