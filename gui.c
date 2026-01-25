@@ -6,6 +6,8 @@
 #include <ui/tab.h>
 #include <ui/tabset.h>
 #include <ui/list.h>
+#include <ui/scrollbar.h>
+#include <ui/rbutton.h>
 
 #include <gfx/bitmap.h>
 #include <gfx/render.h>
@@ -18,11 +20,15 @@
 
 #include "gui.h"
 #include "font_manager.h"
+#include "render_func.h"
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 
 pauk_ui_t *global_pauk_ui = NULL;
+static const int scroll_step = 20; // pixels per click
+static const int page_step = 100;  // pixels per page up/down
+
 //definicije
 static void handle_keyboard_event(ui_window_t *window, void *arg, kbd_event_t *event);
 
@@ -30,15 +36,182 @@ static errno_t create_color(uint16_t r, uint16_t g, uint16_t b, gfx_color_t **co
     return gfx_color_new_rgb_i16(r, g, b, color);
 }
 
+/**
+ * @brief Parses a hex color string (#RGB, #RRGGBB).
+ * @param str Hex string starting after '#'.
+ * @param len Length of the hex part (3 or 6).
+ * @return 32-bit ARGB color.
+ */
+uint32_t parse_hex_color(const char *str, size_t len) {
+    uint32_t color = 0xFF000000;  // Default: opaque black
+    
+    if (len == 3) {
+        // #RGB -> #RRGGBB (your implementation is perfect)
+        for (int i = 0; i < 3; i++) {
+            int d = hex_digit(str[i]);
+            if (d == -1) return 0xFF000000;
+            uint8_t byte = (d * 16) + d;
+            // Shift: R=16, G=8, B=0
+            color |= (uint32_t)byte << (16 - i * 8);
+        }
+    } else if (len == 6) {
+        // #RRGGBB (your implementation is perfect)
+        int d1 = hex_digit(str[0]);
+        int d2 = hex_digit(str[1]);
+        int d3 = hex_digit(str[2]);
+        int d4 = hex_digit(str[3]);
+        int d5 = hex_digit(str[4]);
+        int d6 = hex_digit(str[5]);
+        
+        if (d1 == -1 || d2 == -1 || d3 == -1 || d4 == -1 || d5 == -1 || d6 == -1)
+            return 0xFF000000;
+        
+        uint8_t r = (d1 * 16) + d2;
+        uint8_t g = (d3 * 16) + d4;
+        uint8_t b = (d5 * 16) + d6;
+        
+        color = 0xFF000000 | (r << 16) | (g << 8) | b;
+    } else if (len == 8) {
+        // #RRGGBBAA (ADDED: Support 8-digit hex with alpha)
+        int d1 = hex_digit(str[0]);
+        int d2 = hex_digit(str[1]);
+        int d3 = hex_digit(str[2]);
+        int d4 = hex_digit(str[3]);
+        int d5 = hex_digit(str[4]);
+        int d6 = hex_digit(str[5]);
+        int d7 = hex_digit(str[6]);
+        int d8 = hex_digit(str[7]);
+        
+        if (d1 == -1 || d2 == -1 || d3 == -1 || d4 == -1 || 
+            d5 == -1 || d6 == -1 || d7 == -1 || d8 == -1)
+            return 0xFF000000;
+        
+        uint8_t r = (d1 * 16) + d2;
+        uint8_t g = (d3 * 16) + d4;
+        uint8_t b = (d5 * 16) + d6;
+        uint8_t a = (d7 * 16) + d8;  // Alpha channel
+        
+        // ARGB format: a << 24 | r << 16 | g << 8 | b
+        color = (a << 24) | (r << 16) | (g << 8) | b;
+    }
+    // Note: len == 4 (#RGBA) could also be supported if needed
+    
+    return color;
+}
+
+/**
+ * @brief Converts a hex character ('0'-'9', 'a'-'f', 'A'-'F') to its integer value.
+ */
+int hex_digit(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+
+/** Scrollbar up button pressed (line up) */
+static void scrollbar_up(ui_scrollbar_t *scrollbar, void *arg)
+{
+    pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
+    
+    // Get current position
+    gfx_coord_t pos = ui_scrollbar_get_pos(scrollbar);
+    
+    // Move up by step
+    gfx_coord_t new_pos = pos - scroll_step;
+    if (new_pos < 0) new_pos = 0;
+    
+    ui_scrollbar_set_pos(scrollbar, new_pos);
+    
+    // Update scroll position
+    pauk_ui->scroll_y = new_pos;
+    printf("[SCROLL] Up: %d -> %d\n", pos, new_pos);
+    
+    // Force redraw
+    gfx_update(global_pauk_ui->gc);
+}
+
+/** Scrollbar down button pressed (line down) */
+static void scrollbar_down(ui_scrollbar_t *scrollbar, void *arg)
+{
+    pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
+    
+    gfx_coord_t pos = ui_scrollbar_get_pos(scrollbar);
+    gfx_coord_t new_pos = pos + scroll_step;
+    
+    // Get max scroll (content height - view height)
+    gfx_coord_t max_scroll = pauk_ui->content_height - 
+                             (pauk_ui->list_rect.p1.y - pauk_ui->list_rect.p0.y);
+    
+    if (new_pos > max_scroll) new_pos = max_scroll;
+    
+    ui_scrollbar_set_pos(scrollbar, new_pos);
+    pauk_ui->scroll_y = new_pos;
+    printf("[SCROLL] Down: %d -> %d (max: %d)\n", pos, new_pos, max_scroll);
+    
+    gfx_update(global_pauk_ui->gc);
+}
+
+/** Page up */
+static void scrollbar_page_up(ui_scrollbar_t *scrollbar, void *arg)
+{
+    pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
+    
+    gfx_coord_t pos = ui_scrollbar_get_pos(scrollbar);
+    gfx_coord_t new_pos = pos - page_step;
+    if (new_pos < 0) new_pos = 0;
+    
+    ui_scrollbar_set_pos(scrollbar, new_pos);
+    pauk_ui->scroll_y = new_pos;
+    printf("[SCROLL] Page up: %d -> %d\n", pos, new_pos);
+    
+    gfx_update(global_pauk_ui->gc);
+}
+
+/** Page down */
+static void scrollbar_page_down(ui_scrollbar_t *scrollbar, void *arg)
+{
+    pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
+    
+    gfx_coord_t pos = ui_scrollbar_get_pos(scrollbar);
+    gfx_coord_t new_pos = pos + page_step;
+    
+    gfx_coord_t max_scroll = pauk_ui->content_height - 
+                             (pauk_ui->list_rect.p1.y - pauk_ui->list_rect.p0.y);
+    
+    if (new_pos > max_scroll) new_pos = max_scroll;
+    
+    ui_scrollbar_set_pos(scrollbar, new_pos);
+    pauk_ui->scroll_y = new_pos;
+    printf("[SCROLL] Page down: %d -> %d\n", pos, new_pos);
+    
+    gfx_update(global_pauk_ui->gc);
+}
+
+/** Scrollbar thumb moved (dragging) */
+static void scrollbar_moved(ui_scrollbar_t *scrollbar, void *arg, gfx_coord_t pos)
+{
+    pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
+    
+    pauk_ui->scroll_y = pos;
+    printf("[SCROLL] Moved to: %d\n", pos);
+    
+    // Force immediate redraw during drag
+    gfx_update(global_pauk_ui->gc);
+}
+
+//--------------------------------------------
+// Scrollbar callbacks structure
 static ui_scrollbar_cb_t scrollbar_cb = {
-    .up = NULL, //scrollbar_up
-    .down = NULL, //scrollbar_down
-    .page_up = NULL, //scrollbar_page_up
-    .page_down = NULL, //scrollbar_page_down
-    .moved = NULL  //scrollbar_moved
+    .up = scrollbar_up,
+    .down = scrollbar_down,
+    .page_up = scrollbar_page_up,
+    .page_down = scrollbar_page_down,
+    .moved = scrollbar_moved
     
 };
-
 
 static ui_window_cb_t window_cb = {
     .close = wnd_close,
@@ -98,6 +271,11 @@ static void handle_keyboard_event(ui_window_t *window, void *arg, kbd_event_t *e
     }
 }
 
+// Round function if not available
+float roundf(float value) {
+    return (float)(value < 0.0f ? (int)(value - 0.5f) : (int)(value + 0.5f));
+}
+
 // Callback for window close
 void wnd_close(ui_window_t *window, void *arg)
 {
@@ -117,8 +295,12 @@ void start_gui(void)
         return;
     }
     else{ printf("start gui pokrenut.\n");}
+
+    
+
     gfx_update(global_pauk_ui->gc);
     run_ui(&pauk_ui);
+    
    
 }
 
@@ -1230,6 +1412,8 @@ if (pauk_ui->html_renderer) {
 pauk_ui->use_html_rendering = true;
 // HTML INIT KRAJ
 
+test_simple_text( pauk_ui);
+
     // Paint window
 
     rc = ui_window_paint(pauk_ui->window);
@@ -1382,3 +1566,175 @@ void run_ui(pauk_ui_t *pauk_ui)
     ui_run(pauk_ui->ui);
 
 }
+
+
+// PROBAAAA 
+/*ova kodna jedinica predstavlja test funkciju 
+koja demonstrira renderovanje teksta i trougla
+ sa određenim bojom i pozicijom na 
+grafičkom korisničkom interfejsu (GUI).
+*/
+void test_simple_text(pauk_ui_t *pauk_ui) {
+    printf("[TEST] Font-only test\n");
+
+    // Clear with white
+    int width = pauk_ui->list_rect.p1.x - pauk_ui->list_rect.p0.x;
+    int height = pauk_ui->list_rect.p1.y - pauk_ui->list_rect.p0.y;
+    clear_area_css(pauk_ui, 0, 0, width, height, "white");
+
+    // Get font (should be Arial from your mappings)
+    html_font_t *font = font_manager_get_by_name(&pauk_ui->font_manager, "Arial");
+    if (!font) {
+        printf("ERROR: No font found!\n");
+        return;
+    }
+
+    // Test different fonts/styles
+    int y = 50;
+    render_ttf_text_css(pauk_ui, "Arial 24pt", 50, y, font, 24.0f, "black");
+    y += 40;
+    
+    render_ttf_text_css(pauk_ui, "Blue Text", 50, y, font, 20.0f, "blue");
+    y += 35;
+    
+    render_ttf_text_css(pauk_ui, "Red Bold", 50, y, font, 18.0f, "red");
+    y += 30;
+    
+    render_ttf_text_css(pauk_ui, "Green Medium", 50, y, font, 16.0f, "green");
+    y += 25;
+    
+    render_ttf_text_css(pauk_ui, "Gray Small", 50, y, font, 14.0f, "#666666");
+    y += 20;
+    
+    render_ttf_text_css(pauk_ui, "Purple Tiny", 50, y, font, 12.0f, "purple");
+    
+    printf("[TEST] Font test done\n");
+} 
+
+
+void render_ttf_text(pauk_ui_t *pauk_ui, const char *text, int x, int y,
+    html_font_t *font, float size, gfx_color_t *color)
+{
+if (!pauk_ui || !pauk_ui->html_renderer || !text)
+return;
+
+html_renderer_t *renderer = pauk_ui->html_renderer;
+if (!renderer->content_bitmap) {
+    printf("[TTF] No content bitmap in renderer\n");
+return;
+}
+printf("[TTF] IMA content bitmap in renderer\n");
+
+// Get bitmap allocation
+gfx_bitmap_alloc_t alloc;
+if (gfx_bitmap_get_alloc(renderer->content_bitmap, &alloc) != EOK) {
+     printf("[TTF] Failed to get bitmap allocation\n");
+return;
+}
+printf("[TTF] URADIO bitmap allokaciju\n");
+
+uint32_t *pixels = (uint32_t *)alloc.pixels;
+int stride = alloc.pitch / 4;
+int width  = renderer->view_width;
+int height = renderer->view_height;
+
+// Use provided font or fallback to default
+html_font_t *use_font = font ? font :
+font_manager_get_font(&pauk_ui->font_manager, 
+             pauk_ui->font_manager.default_font_index);
+
+if (!use_font || !use_font->is_loaded) {
+    printf("[TTF] Font not loaded (expecting default font)\n");
+return;
+}
+
+printf("[TTF] Font UCITAN (expecting default font)\n");
+
+stbtt_fontinfo *info = &use_font->info;
+float scale = stbtt_ScaleForPixelHeight(info, size);
+
+// Get vertical metrics
+int ascent, descent, lineGap;
+stbtt_GetFontVMetrics(info, &ascent, &descent, &lineGap);
+int baseline = (int)roundf(ascent * scale);
+
+printf("[TTF] OK FONT METRICS\n");
+
+int pen_x = x;
+int pen_y = y + baseline;
+
+// Get RGB color components
+uint16_t rr = 0, gg = 0, bb = 0;
+if (color)
+gfx_color_get_rgb_i16(color, &rr, &gg, &bb);
+uint8_t r = rr >> 8, g = gg >> 8, b = bb >> 8;
+
+const unsigned char *p = (const unsigned char *)text;
+while (*p) {
+int code_point = *p;
+
+// Glyph metrics
+int advance, lsb;
+stbtt_GetCodepointHMetrics(info, code_point, &advance, &lsb);
+
+int x0, y0, x1, y1;
+stbtt_GetCodepointBitmapBox(info, code_point, scale, scale, &x0, &y0, &x1, &y1);
+
+int w = x1 - x0;
+int h = y1 - y0;
+
+if (w > 0 && h > 0) {
+unsigned char *bitmap = calloc(w * h, 1);
+if (!bitmap) {
+printf("[TTF] Memory allocation failed for glyph\n");
+return;
+}
+printf("[TTF] OK MEMORY ALOKACIJA ZA GLUPH\n");
+
+stbtt_MakeCodepointBitmap(info, bitmap, w, h, w, scale, scale, code_point);
+printf("[TTF] OK KODEPOINT BITMAP\n");
+int draw_x = pen_x + (int)roundf(lsb * scale);
+int draw_y = pen_y + y0;
+
+for (int by = 0; by < h; by++) {
+for (int bx = 0; bx < w; bx++) {
+   unsigned char a = bitmap[by * w + bx];
+   if (a == 0) continue;
+
+   int dx = draw_x + bx;
+   int dy = draw_y + by;
+   if (dx < 0 || dy < 0 || dx >= width || dy >= height)
+       continue;
+
+   uint32_t *dst = &pixels[dy * stride + dx];
+   uint32_t old = *dst;
+
+   uint8_t old_r = (old >> 16) & 0xFF;
+   uint8_t old_g = (old >> 8) & 0xFF;
+   uint8_t old_b = old & 0xFF;
+
+   uint8_t inv_a = 255 - a;
+   uint8_t new_r = (r * a + old_r * inv_a) / 255;
+   uint8_t new_g = (g * a + old_g * inv_a) / 255;
+   uint8_t new_b = (b * a + old_b * inv_a) / 255;
+
+   *dst = 0xFF000000 | (new_r << 16) | (new_g << 8) | new_b;
+}
+}
+
+free(bitmap);
+}
+
+// Kerning with next character
+int next = *(p + 1);
+int kern = stbtt_GetCodepointKernAdvance(info, code_point, next);
+
+pen_x += (int)roundf((advance + kern) * scale);
+p++;
+}
+printf("[TTF] PRED CRTANJE\n");
+// Refresh the display
+gfx_bitmap_render(renderer->content_bitmap, &pauk_ui->list_rect, NULL);
+gfx_update(pauk_ui->gc);
+printf("[TTF] ZAVRSIO\n");
+} 
