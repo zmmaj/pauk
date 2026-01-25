@@ -1,4 +1,5 @@
 // font_manager.c
+#include "gui.h"
 #include "font_manager.h"
 #include <str.h>
 #include <mem.h>
@@ -416,4 +417,140 @@ int font_manager_select_from_list(font_manager_t *manager, const char *font_list
     // Otherwise use default
     printf("[FONT] No suitable font found in list, using default\n");
     return manager->default_font_index;
+}
+
+
+html_font_t* font_manager_get_by_name(font_manager_t *manager, const char *css_font_family) {
+    if (!manager || !css_font_family || manager->font_count == 0) {
+        return NULL;
+    }
+    
+    // Debug output
+    if (DEB_FONT) printf("[FONT] Looking for: '%s'\n", css_font_family);
+    
+    // 1. FIRST: Check your pre-defined family_map (fastest path)
+    for (int i = 0; i < manager->family_count; i++) {
+        if (strcasecmp(manager->family_map[i].family, css_font_family) == 0) {
+            int font_index = manager->family_map[i].font_index;
+            
+            if (font_index >= 0 && font_index < manager->font_count) {
+                html_font_t *font = &manager->fonts[font_index];
+                
+                if (font->is_loaded) {
+                    if (DEB_FONT) printf("[FONT] Found in family_map: '%s' -> index %d (%s)\n",
+                                        css_font_family, font_index, font->name);
+                    return font;
+                }
+            }
+            break; // Found in map but font not loaded/valid
+        }
+    }
+    
+    // 2. Check loaded fonts by name (from font->name field)
+    for (int i = 0; i < manager->font_count; i++) {
+        html_font_t *font = &manager->fonts[i];
+        
+        if (font->is_loaded && font->name[0] != '\0') {
+            // Exact name match (case-insensitive)
+            if (strcasecmp(font->name, css_font_family) == 0) {
+                if (DEB_FONT) printf("[FONT] Exact name match: %s\n", font->name);
+                return font;
+            }
+            
+            // Partial match (CSS "Arial" matches font name "Arial Regular")
+            if (str_casestr(font->name, css_font_family)) {
+                if (DEB_FONT) printf("[FONT] Partial match: '%s' in %s\n", 
+                                    css_font_family, font->name);
+                return font;
+            }
+        }
+    }
+    
+    // 3. Common aliases for your 3 FreeFont files
+    // Map common CSS names to your loaded font indices
+    struct {
+        const char *css_name;
+        int font_index;
+    } common_aliases[] = {
+        {"helvetica", 0},       // arial.ttf
+        {"verdana", 0},         // arial.ttf  
+        {"tahoma", 0},          // arial.ttf
+        {"geneva", 0},          // arial.ttf
+        {"times new roman", 1}, // times.ttf
+        {"georgia", 1},         // times.ttf
+        {"courier new", 2},     // cour.ttf
+        {"consolas", 2},        // cour.ttf
+        {"monaco", 2},          // cour.ttf
+        {NULL, -1}
+    };
+    
+    for (int i = 0; common_aliases[i].css_name; i++) {
+        if (str_casestr(css_font_family, common_aliases[i].css_name)) {
+            int font_index = common_aliases[i].font_index;
+            
+            if (font_index >= 0 && font_index < manager->font_count) {
+                html_font_t *font = &manager->fonts[font_index];
+                
+                if (font->is_loaded) {
+                    if (DEB_FONT) printf("[FONT] Common alias: '%s' -> %s\n",
+                                        css_font_family, font->name);
+                    return font;
+                }
+            }
+            break;
+        }
+    }
+    
+    // 4. Generic font families (sans-serif, serif, monospace)
+    // These should be in your family_map, but just in case...
+    if (strcasecmp(css_font_family, "sans-serif") == 0) {
+        // Find arial (index 0)
+        if (manager->font_count > 0 && manager->fonts[0].is_loaded) {
+            if (DEB_FONT) printf("[FONT] Generic sans-serif -> %s\n", 
+                                manager->fonts[0].name);
+            return &manager->fonts[0];
+        }
+    }
+    
+    if (strcasecmp(css_font_family, "serif") == 0) {
+        // Find times (index 1)
+        if (manager->font_count > 1 && manager->fonts[1].is_loaded) {
+            if (DEB_FONT) printf("[FONT] Generic serif -> %s\n", 
+                                manager->fonts[1].name);
+            return &manager->fonts[1];
+        }
+    }
+    
+    if (strcasecmp(css_font_family, "monospace") == 0) {
+        // Find courier (index 2)
+        if (manager->font_count > 2 && manager->fonts[2].is_loaded) {
+            if (DEB_FONT) printf("[FONT] Generic monospace -> %s\n", 
+                                manager->fonts[2].name);
+            return &manager->fonts[2];
+        }
+    }
+    
+    // 5. DEFAULT FONT FALLBACK (from your default_font_index)
+    if (manager->default_font_index >= 0 && 
+        manager->default_font_index < manager->font_count) {
+        html_font_t *font = &manager->fonts[manager->default_font_index];
+        
+        if (font->is_loaded) {
+            if (DEB_FONT) printf("[FONT] Using default font: %s\n", font->name);
+            return font;
+        }
+    }
+    
+    // 6. LAST RESORT: First loaded font
+    for (int i = 0; i < manager->font_count; i++) {
+        if (manager->fonts[i].is_loaded) {
+            if (DEB_FONT) printf("[FONT] Using first loaded font: %s\n", 
+                                manager->fonts[i].name);
+            return &manager->fonts[i];
+        }
+    }
+    
+    // No fonts available at all
+    if (DEB_FONT) printf("[FONT] ERROR: No fonts available for '%s'\n", css_font_family);
+    return NULL;
 }
