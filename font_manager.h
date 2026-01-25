@@ -1,12 +1,16 @@
 #ifndef FONT_MANAGER_H
 #define FONT_MANAGER_H
 
+
 #include <stdbool.h>
 #include <vfs/vfs.h>
 #include <errno.h>
+#include <string.h>
 #include <str_error.h>
 #include <dirent.h>
+
 #include "stb_truetype.h"
+
 
 #define MAX_FONTS 50
 #define MAX_FONT_NAME_LEN 64
@@ -72,5 +76,7 @@ int font_manager_find_best_match(font_manager_t *manager, const char *requested_
 
 void font_manager_init_substitutions(font_manager_t *manager);
 int font_manager_select_from_list(font_manager_t *manager, const char *font_list);
+
+html_font_t* font_manager_get_by_name(font_manager_t *manager, const char *css_font_family);
 
 #endif
