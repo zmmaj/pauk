@@ -1,5 +1,5 @@
-#ifndef PAUK_H
-#define PAUK_H
+#ifndef GUI_H
+#define GUI_H
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,6 +37,7 @@
 
 #include "font_manager.h"
 
+
 // Common definitions
 #define NAME "pauk"
 #define MAX_RETRIES 3
@@ -45,12 +46,14 @@
 #define RECV_MAX_RETRIES 100
 // DEBUG STUFF////
 
+#define DEB_INFO 1
 #define DEB_INIT 0
 #define DEB_WARNING 0
 #define DEB_INIT_MENU 0
 #define DEB_INIT_SCROLLBAR 0
 #define DEB_BITMAP 0
 #define DEB_INIT_FONT 0
+#define DEB_FONT 1
 #define DEB_INIT_UI 0
 #define DEB_INIT_LEXBOR 0
 #define DEB_LEXBOR 0
@@ -96,8 +99,9 @@ typedef struct {
     html_text_style_t link_style;  // ← CHANGED
 } html_renderer_t;
 
+
 // UI structure
-typedef struct {
+typedef struct pauk_ui {
     ui_t *ui;
     ui_window_t *window;
     ui_fixed_t *fixed;
@@ -269,7 +273,6 @@ typedef struct {
 
 } pauk_ui_t;
 
-//
 
 typedef struct {
     char *from;
@@ -279,14 +282,51 @@ typedef struct {
     size_t size;
 } email_t;
 
+// CSS structures and parsing
+typedef struct {
+    const char *name;
+    uint32_t value;
+} css_named_color_t;
 
-
-//pauk_ui_t *global_pauk_ui = NULL;
-// Color definitions for title styling
-//static gfx_color_t *title_color = NULL;
-//static gfx_color_t *title_bgcolor = NULL;
-//static int scroll_step = 30;
-//static int file_counter = 0;
+static const css_named_color_t css_named_colors[] = {
+    {"black", 0xFF000000},
+    {"white", 0xFFFFFFFF},
+    {"red", 0xFFFF0000},
+    {"green", 0xFF008000},
+    {"blue", 0xFF0000FF},
+    {"yellow", 0xFFFFFF00},
+    {"cyan", 0xFF00FFFF},
+    {"magenta", 0xFFFF00FF},
+    {"gray", 0xFF808080},
+    {"grey", 0xFF808080},
+    {"dimgray", 0xFF696969},
+    {"dimgrey", 0xFF696969},
+    {"darkgray", 0xFFA9A9A9},
+    {"darkgrey", 0xFFA9A9A9},
+    {"lightgray", 0xFFD3D3D3},
+    {"lightgrey", 0xFFD3D3D3},
+    {"darkred", 0xFF8B0000},
+    {"lightred", 0xFFFF6347},
+    {"darkgreen", 0xFF006400},
+    {"lightgreen", 0xFF90EE90},
+    {"darkblue", 0xFF00008B},
+    {"lightblue", 0xFFADD8E6},
+    {"maroon", 0xFF800000},
+    {"purple", 0xFF800080},
+    {"fuchsia", 0xFFFF00FF},
+    {"lime", 0xFF00FF00},
+    {"olive", 0xFF808000},
+    {"navy", 0xFF000080},
+    {"teal", 0xFF008080},
+    {"aqua", 0xFF00FFFF},
+    {"silver", 0xFFC0C0C0},
+    {"orange", 0xFFFFA500},
+    {"brown", 0xFFA52A2A},
+    {"pink", 0xFFFFC0CB},
+    {"gold", 0xFFFFD700},
+    {"violet", 0xFFEE82EE},
+    {NULL, 0}
+};
 
 // Simple busy wait delay function
 static inline void simple_delay(unsigned int ms)
@@ -295,6 +335,10 @@ static inline void simple_delay(unsigned int ms)
         // Do nothing, just wait
     }
 }
+
+uint32_t parse_hex_color(const char *str, size_t len);
+int hex_digit(char c);
+
 
 void start_gui(void);
 
@@ -317,4 +361,12 @@ errno_t html_renderer_init(html_renderer_t *renderer, gfx_context_t *gc,
 
  void run_ui(pauk_ui_t *pauk_ui);
 
-#endif // PAUK_H
+ void test_simple_text(pauk_ui_t *pauk_ui);
+
+ void render_ttf_text(pauk_ui_t *pauk_ui, const char *text, int x, int y,
+    html_font_t *font, float size, gfx_color_t *color);
+
+
+    float roundf(float value);
+
+#endif // GUI
