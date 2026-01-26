@@ -21,6 +21,7 @@
 #include "gui.h"
 #include "font_manager.h"
 #include "render_func.h"
+#include "change_size.h"
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
@@ -477,7 +478,7 @@ if (ui_is_textmode(pauk_ui->ui)) {
     pauk_ui->current_y1 = SYSTEM_MENU_HEIGHT + ROW_SPACING+20;
    
     // NAVIGACIJA DUGMAD!
-static ui_pbutton_cb_t resize_button_cb = { .clicked = NULL }; // change_size  
+static ui_pbutton_cb_t resize_button_cb = { .clicked = change_size }; // change_size  
 static ui_pbutton_cb_t back_button_cb = { .clicked = NULL }; //navigate_back
 static ui_pbutton_cb_t refresh_button_cb = { .clicked = NULL }; //refresh_page
 static ui_pbutton_cb_t forward_button_cb = { .clicked = NULL}; //navigate_forward 
