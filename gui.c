@@ -1,13 +1,17 @@
 #include <stdio.h>
+#include <unistd.h>  
 #include <errno.h>
 #include <str_error.h>
+#include "cjson.h"
 
 #include <ui/ui.h>
+#include <ui/window.h>
 #include <ui/tab.h>
 #include <ui/tabset.h>
 #include <ui/list.h>
 #include <ui/scrollbar.h>
 #include <ui/rbutton.h>
+#include <io/pixelmap.h>
 
 #include <gfx/bitmap.h>
 #include <gfx/render.h>
@@ -15,20 +19,26 @@
 #include <gfx/color.h>
 #include <gfx/font.h>
 #include <gfx/typeface.h>
+#include <gfx/cursor.h>
 #include <gfx/coord.h>
 #include <gfximage/tga.h>
 
 #include "gui.h"
 #include "font_manager.h"
+#include "forms_parser.h"
+#include "rendering_elements/defaults.h"
 #include "render_func.h"
 #include "change_size.h"
+#include "layout_engine.h"
+#include "bookmarks.h"
+#include "pauk_tls.h"
+#include "network.h"
+#include "url_utils.h"
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 
 pauk_ui_t *global_pauk_ui = NULL;
-static const int scroll_step = 20; // pixels per click
-static const int page_step = 100;  // pixels per page up/down
 
 //definicije
 static void handle_keyboard_event(ui_window_t *window, void *arg, kbd_event_t *event);
@@ -111,6 +121,91 @@ int hex_digit(char c)
     return -1;
 }
 
+// Start hover timer
+void start_hover_timer(pauk_ui_t *pauk_ui, int interval_ms) {
+    if (!pauk_ui->hover_timer) {
+        // Create only once
+        pauk_ui->hover_timer = fibril_timer_create(NULL);
+    }
+    
+    // Clear and re-set the SAME timer
+    fibril_timer_clear(pauk_ui->hover_timer);
+    fibril_timer_set(pauk_ui->hover_timer, 
+                    interval_ms * 1000,
+                    hover_timer_callback, 
+                    pauk_ui);
+}
+
+void hover_timer_callback(void *arg) {
+    pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
+    
+    if (!hover_timer_running) return;
+    
+    check_hover(pauk_ui);
+    
+    // Re-arm the SAME timer
+    if (hover_timer_running) {
+        fibril_timer_set(pauk_ui->hover_timer, 
+                        pauk_ui->hover_interval,
+                        hover_timer_callback, 
+                        pauk_ui);
+    }
+}
+
+
+// Stop hover timer
+void stop_hover_timer(pauk_ui_t *pauk_ui) {
+    if (pauk_ui->hover_timer) {
+        fibril_timer_clear(pauk_ui->hover_timer);
+        fibril_timer_destroy(pauk_ui->hover_timer); 
+        pauk_ui->hover_timer = NULL;
+    }
+}
+
+
+// tajmer poruka // Status timer callback - clears status bar message
+void status_timer_callback(void *arg) {
+    pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
+    
+    if (pauk_ui && pauk_ui->status_label) {
+        ui_label_set_text(pauk_ui->status_label, "");
+        ui_label_paint(pauk_ui->status_label);
+        gfx_update(pauk_ui->gc);
+    }
+}
+
+void show_status_message(pauk_ui_t* pauk_ui, const char* message, int duration_ms) {
+    if (!pauk_ui || !pauk_ui->status_label) return;
+
+    // Stop existing timer
+    if (pauk_ui->status_timer) {
+        fibril_timer_clear(pauk_ui->status_timer);
+    }
+    
+    // Show message
+    ui_label_set_text(pauk_ui->status_label, message);
+    ui_label_paint(pauk_ui->status_label);
+    gfx_update(pauk_ui->gc);
+    
+    // Start new timer
+    if (duration_ms > 0) {
+        if (!pauk_ui->status_timer) {
+            pauk_ui->status_timer = fibril_timer_create(NULL);
+        }
+        
+        fibril_timer_set(pauk_ui->status_timer, 
+                        duration_ms * 1000,  // Convert to microseconds
+                        status_timer_callback, 
+                        pauk_ui);
+    }
+}
+
+void stop_status_timer(pauk_ui_t *pauk_ui) {
+    if (pauk_ui->status_timer) {
+        fibril_timer_clear(pauk_ui->status_timer);
+        pauk_ui->status_timer = NULL;
+    }
+}
 
 /** Scrollbar up button pressed (line up) */
 static void scrollbar_up(ui_scrollbar_t *scrollbar, void *arg)
@@ -121,15 +216,15 @@ static void scrollbar_up(ui_scrollbar_t *scrollbar, void *arg)
     gfx_coord_t pos = ui_scrollbar_get_pos(scrollbar);
     
     // Move up by step
-    gfx_coord_t new_pos = pos - scroll_step;
+    gfx_coord_t new_pos = pos - pauk_ui->scroll_step;
     if (new_pos < 0) new_pos = 0;
     
     ui_scrollbar_set_pos(scrollbar, new_pos);
     
     // Update scroll position
     pauk_ui->scroll_y = new_pos;
-    printf("[SCROLL] Up: %d -> %d\n", pos, new_pos);
-    
+    pixelmap_to_bitmap_copy(pauk_ui);
+        gfx_bitmap_render(pauk_ui->html_renderer->content_bitmap, &pauk_ui->list_rect, NULL);
     // Force redraw
     gfx_update(global_pauk_ui->gc);
 }
@@ -140,7 +235,7 @@ static void scrollbar_down(ui_scrollbar_t *scrollbar, void *arg)
     pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
     
     gfx_coord_t pos = ui_scrollbar_get_pos(scrollbar);
-    gfx_coord_t new_pos = pos + scroll_step;
+    gfx_coord_t new_pos = pos + pauk_ui->scroll_step;
     
     // Get max scroll (content height - view height)
     gfx_coord_t max_scroll = pauk_ui->content_height - 
@@ -150,8 +245,8 @@ static void scrollbar_down(ui_scrollbar_t *scrollbar, void *arg)
     
     ui_scrollbar_set_pos(scrollbar, new_pos);
     pauk_ui->scroll_y = new_pos;
-    printf("[SCROLL] Down: %d -> %d (max: %d)\n", pos, new_pos, max_scroll);
-    
+    pixelmap_to_bitmap_copy(pauk_ui);
+    gfx_bitmap_render(pauk_ui->html_renderer->content_bitmap, &pauk_ui->list_rect, NULL);
     gfx_update(global_pauk_ui->gc);
 }
 
@@ -161,13 +256,13 @@ static void scrollbar_page_up(ui_scrollbar_t *scrollbar, void *arg)
     pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
     
     gfx_coord_t pos = ui_scrollbar_get_pos(scrollbar);
-    gfx_coord_t new_pos = pos - page_step;
+    gfx_coord_t new_pos = pos - pauk_ui->page_step;
     if (new_pos < 0) new_pos = 0;
     
     ui_scrollbar_set_pos(scrollbar, new_pos);
     pauk_ui->scroll_y = new_pos;
-    printf("[SCROLL] Page up: %d -> %d\n", pos, new_pos);
-    
+    pixelmap_to_bitmap_copy(pauk_ui);
+    gfx_bitmap_render(pauk_ui->html_renderer->content_bitmap, &pauk_ui->list_rect, NULL);
     gfx_update(global_pauk_ui->gc);
 }
 
@@ -177,17 +272,16 @@ static void scrollbar_page_down(ui_scrollbar_t *scrollbar, void *arg)
     pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
     
     gfx_coord_t pos = ui_scrollbar_get_pos(scrollbar);
-    gfx_coord_t new_pos = pos + page_step;
+    gfx_coord_t new_pos = pos + pauk_ui->page_step;
     
     gfx_coord_t max_scroll = pauk_ui->content_height - 
                              (pauk_ui->list_rect.p1.y - pauk_ui->list_rect.p0.y);
     
     if (new_pos > max_scroll) new_pos = max_scroll;
-    
     ui_scrollbar_set_pos(scrollbar, new_pos);
     pauk_ui->scroll_y = new_pos;
-    printf("[SCROLL] Page down: %d -> %d\n", pos, new_pos);
-    
+    pixelmap_to_bitmap_copy(pauk_ui);
+    gfx_bitmap_render(pauk_ui->html_renderer->content_bitmap, &pauk_ui->list_rect, NULL);
     gfx_update(global_pauk_ui->gc);
 }
 
@@ -196,10 +290,12 @@ static void scrollbar_moved(ui_scrollbar_t *scrollbar, void *arg, gfx_coord_t po
 {
     pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
     
-    pauk_ui->scroll_y = pos;
-    printf("[SCROLL] Moved to: %d\n", pos);
+    // Convert scrollbar units to content pixels
+    pauk_ui->scroll_y = (int)(pos * pauk_ui->pixels_per_scroll_unit);
     
-    // Force immediate redraw during drag
+    // Redraw at new position
+    pixelmap_to_bitmap_copy(pauk_ui);
+    gfx_bitmap_render(pauk_ui->html_renderer->content_bitmap, &pauk_ui->list_rect, NULL);
     gfx_update(global_pauk_ui->gc);
 }
 
@@ -214,63 +310,463 @@ static ui_scrollbar_cb_t scrollbar_cb = {
     
 };
 
+void wnd_pos_event(ui_window_t *window, void *arg, pos_event_t *event) {
+    ui_window_def_pos(window, event);
+
+    // ========== SIMPLE BOUNDS CHECK ==========
+    // Get tab content area
+    int tab_x = global_pauk_ui->tab_rect_base.p0.x;
+    int tab_y = global_pauk_ui->tab_rect_base.p0.y;
+    int tab_w = global_pauk_ui->tab_rect_base.p1.x - tab_x - 25;
+    int tab_h = global_pauk_ui->tab_rect_base.p1.y - tab_y;
+
+    if (event->hpos < (sysarg_t)tab_x || event->hpos >= (sysarg_t)tab_x + tab_w ||
+        event->vpos < (sysarg_t)tab_y || event->vpos >= (sysarg_t)tab_y + tab_h) {
+        return;
+    }
+
+    if (!global_pauk_ui->cursor_get_pos) {
+        global_pauk_ui->cursor_move = 0;
+        global_pauk_ui->cursor_get_pos = 1;
+    }
+    global_pauk_ui->mouse_pos.x = event->hpos;
+    global_pauk_ui->mouse_pos.y = event->vpos;
+
+    if (event->type == POS_RELEASE) {
+        int browser_x = global_pauk_ui->tab_rect_base.p0.x;
+        int browser_y = global_pauk_ui->tab_rect_base.p0.y;
+        
+        int adjusted_x = event->hpos - browser_x - 27;
+        int adjusted_y = event->vpos - browser_y - 42 + global_pauk_ui->scroll_y;
+        
+        if (global_pauk_ui->rendering_json) {
+            cJSON* clicked = find_element_at_position(
+                global_pauk_ui->rendering_json,
+                adjusted_x, 
+                adjusted_y
+            );
+            
+            // ===== HANDLE FOCUS =====
+            if (clicked) {
+                cJSON* form_element = clicked;
+                const char* tag = get_json_string(form_element, "tag", "");
+                
+                // If clicked on a text node, find its parent
+                if (strcmp(tag, "text") == 0) {
+                    int parent_id = get_json_number(form_element, "parent_id", -1);
+                    cJSON* parent = find_element_by_id(global_pauk_ui->rendering_json, parent_id);
+                    if (parent) {
+                        form_element = parent;
+                        tag = get_json_string(form_element, "tag", "");
+                    }
+                }
+                
+                int is_input = get_json_bool(form_element, "is_input", 0);
+                int is_textarea = get_json_bool(form_element, "is_textarea", 0);
+                
+                if (is_input || is_textarea) {
+                    // Store the actual form element (with correct x,y)
+                    global_pauk_ui->focused_element = form_element;
+                    global_pauk_ui->cursor_position = strlen(get_json_string(form_element, "value", ""));
+                    printf("✅ Focus set on %s at x=%d, y=%d\n", 
+                           tag,
+                           get_json_number(form_element, "x", -1),
+                           get_json_number(form_element, "y", -1));
+                } else {
+                    global_pauk_ui->focused_element = NULL;
+                }
+                
+                handle_element_click(global_pauk_ui, clicked, event->btn_num);
+            } else {
+                // Click on empty area - clear focus
+                global_pauk_ui->focused_element = NULL;
+            }
+            // =======================
+        }
+    }
+}
+
+
 static ui_window_cb_t window_cb = {
     .close = wnd_close,
-    .kbd = handle_keyboard_event
+    .kbd = handle_keyboard_event,
+    .pos = wnd_pos_event
 };
+
 
 static void handle_keyboard_event(ui_window_t *window, void *arg, kbd_event_t *event)
 {
     pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
 
-
     if (event->type == KEY_PRESS) {
+
+      //  printf("⌨️ Key pressed: key=%d, mods=%d, c='%c'\n", event->key, event->mods, event->c);
+
+        // ===== GLOBAL HOTKEYS (always work) =====
+        if (event->key == KC_S && (event->mods & KM_ALT)) {
+            printf("💾 ALT+S pressed - saving debug snapshot\n");
+            save_debug_snapshot(pauk_ui);
+            return;
+        }
+        
+// ===== MOUSE WHEEL / ARROW KEYS FOR SCROLLING =====
+if (event->key == KC_UP || event->key == 84) {  // Scroll up
+    int view_height = pauk_ui->list_rect.p1.y - pauk_ui->list_rect.p0.y;
+    int max_scroll = pauk_ui->content_height - view_height;
+    
+    // Use 3x larger step for keyboard/mouse wheel
+    int step = pauk_ui->scroll_step * 3;
+    if (step < 30) step = 30;  // Minimum 30px
+    
+    // Scroll up by step
+    pauk_ui->scroll_y -= step;
+    if (pauk_ui->scroll_y < 0) pauk_ui->scroll_y = 0;
+    
+    // Update scrollbar position
+    if (pauk_ui->vscrollbar && max_scroll > 0) {
+        float ratio = (float)pauk_ui->scroll_y / max_scroll;
+        gfx_coord_t scrollbar_pos = (gfx_coord_t)(ratio * ui_scrollbar_move_length(pauk_ui->vscrollbar));
+        ui_scrollbar_set_pos(pauk_ui->vscrollbar, scrollbar_pos);
+    }
+    
+    // Update display
+    pixelmap_to_bitmap_copy(pauk_ui);
+    gfx_bitmap_render(pauk_ui->html_renderer->content_bitmap, &pauk_ui->list_rect, NULL);
+    gfx_update(pauk_ui->gc);
+    return;
+}
+
+if (event->key == KC_DOWN || event->key == 85) {  // Scroll down
+    int view_height = pauk_ui->list_rect.p1.y - pauk_ui->list_rect.p0.y;
+    int max_scroll = pauk_ui->content_height - view_height;
+    
+    // Use 3x larger step for keyboard/mouse wheel
+    int step = pauk_ui->scroll_step * 3;
+    if (step < 30) step = 30;  // Minimum 30px
+    
+    // Scroll down by step
+    pauk_ui->scroll_y += step;
+    if (pauk_ui->scroll_y > max_scroll) pauk_ui->scroll_y = max_scroll;
+    
+    // Update scrollbar position
+    if (pauk_ui->vscrollbar && max_scroll > 0) {
+        float ratio = (float)pauk_ui->scroll_y / max_scroll;
+        gfx_coord_t scrollbar_pos = (gfx_coord_t)(ratio * ui_scrollbar_move_length(pauk_ui->vscrollbar));
+        ui_scrollbar_set_pos(pauk_ui->vscrollbar, scrollbar_pos);
+    }
+    
+    // Update display
+    pixelmap_to_bitmap_copy(pauk_ui);
+    gfx_bitmap_render(pauk_ui->html_renderer->content_bitmap, &pauk_ui->list_rect, NULL);
+    gfx_update(pauk_ui->gc);
+    return;
+}
+
+        
+        // ===== CHECK FOR FOCUSED FORM ELEMENT =====
+        if (pauk_ui->focused_element) {
+            int is_input = get_json_bool(pauk_ui->focused_element, "is_input", 0);
+            int is_textarea = get_json_bool(pauk_ui->focused_element, "is_textarea", 0);
+            
+            if (is_input || is_textarea) {
+                const char *current = get_json_string(pauk_ui->focused_element, "value", "");
+                char *new_value = malloc(strlen(current) + 2);
+                if (!new_value) return;
+                
+                strcpy(new_value, current);
+                int modified = 0;
+                
+                // Get textarea dimensions for limits
+             //   int textarea_width = 0;
+                int textarea_rows = 0;
+                if (is_textarea) {
+                //    int textarea_width = 0;
+                    cJSON* parent_elem = pauk_ui->focused_element;
+                    const char* tag = get_json_string(parent_elem, "tag", "");
+                    if (strcmp(tag, "text") == 0) {
+                        int parent_id = get_json_number(parent_elem, "parent_id", -1);
+                        parent_elem = find_element_by_id(pauk_ui->rendering_json, parent_id);
+                    }
+               //    int textarea_width = get_json_number(parent_elem, "width", 400);
+                    textarea_rows = get_json_number(pauk_ui->focused_element, "textarea_rows", 4);
+                }
+                
+                // Handle ENTER in textarea (BEFORE navigation switch)
+                if ((event->key == KC_ENTER || event->key == KC_NENTER) && is_textarea) {
+                    // Count current lines
+                    int line_count = 1;
+                    for (int i = 0; new_value[i]; i++) {
+                        if (new_value[i] == '\n') line_count++;
+                    }
+                    
+                    // Check if adding newline would exceed height
+                    if (line_count + 1 > textarea_rows) {
+                        printf("⚠️ Cannot add newline - textarea full (max %d lines)\n", textarea_rows);
+                        modified = 0;
+                    } else {
+                        // Add newline
+                        memmove(&new_value[pauk_ui->cursor_position + 1], 
+                                &new_value[pauk_ui->cursor_position], 
+                                strlen(new_value) - pauk_ui->cursor_position + 1);
+                        new_value[pauk_ui->cursor_position] = '\n';
+                        pauk_ui->cursor_position++;
+                        modified = 1;
+                        printf("📝 Enter pressed - added newline at position %d\n", pauk_ui->cursor_position);
+                    }
+                }
+                // =========================================================================
+                // 🚀 SUBMIT FORME NA ENTER ZA INPUT POLJA (USAGLAŠENO SA TVOJIM REŠENJEM)
+                // Aktivira se samo ako smo u input polju i koristi find_parent_form
+                // =========================================================================
+                else if ((event->key == KC_ENTER || event->key == KC_NENTER) && is_input) {
+                    printf("🔍 [Keyboard Router] Enter pritisnut u inputu! Tražim roditeljsku formu...\n");
+                    
+                    // Deklaracija i poziv tvoje funkcije iz render_func.c
+                    extern cJSON* find_parent_form(cJSON* root, cJSON* element);
+                    cJSON *roditeljska_forma = find_parent_form(pauk_ui->rendering_json, pauk_ui->focused_element);
+                    
+                    if (roditeljska_forma) {
+                        printf("✅ [Keyboard Router] Forma pronađena. Pokrećem tvoj submit_form...\n");
+                        
+                        // Oslobađamo bafer pre prevremenog izlaza da sprečimo curenje memorije
+                        free(new_value);
+                        
+                        // Deklaracija i aktivacija tvog submit_form procesora
+                        extern void submit_form(pauk_ui_t* pauk_ui, cJSON* form);
+                        submit_form(pauk_ui, roditeljska_forma);
+                        
+                        return; // Završeno, prekidamo dalju obradu ovog tastera!
+                    } else {
+                        printf("⚠️ [Keyboard Router] Ovaj input nema roditeljsku formu u JSON stablu.\n");
+                    }
+                }
+                // Handle backspace
+                else if (event->key == KC_BACKSPACE) {
+                    if (pauk_ui->cursor_position > 0) {
+                        memmove(&new_value[pauk_ui->cursor_position - 1], 
+                                &new_value[pauk_ui->cursor_position], 
+                                strlen(new_value) - pauk_ui->cursor_position + 1);
+                        pauk_ui->cursor_position--;
+                        modified = 1;
+                    }
+                }
+                // Handle delete
+                else if (event->key == KC_DELETE) {
+                    if (pauk_ui->cursor_position < (int)strlen(current)) {
+                        memmove(&new_value[pauk_ui->cursor_position], 
+                                &new_value[pauk_ui->cursor_position + 1], 
+                                strlen(new_value) - pauk_ui->cursor_position);
+                        modified = 1;
+                    }
+                }
+                // Handle regular characters
+// Handle regular characters
+else if (event->c >= 32 && event->c <= 126) {
+    if (is_textarea) {
+        // Get textarea width
+        cJSON* parent_elem = pauk_ui->focused_element;
+        const char* tag = get_json_string(parent_elem, "tag", "");
+        if (strcmp(tag, "text") == 0) {
+            int parent_id = get_json_number(parent_elem, "parent_id", -1);
+            parent_elem = find_element_by_id(pauk_ui->rendering_json, parent_id);
+        }
+        int textarea_width = get_json_number(parent_elem, "width", 400);
+        int textarea_rows = get_json_number(pauk_ui->focused_element, "textarea_rows", 4);
+        
+        // Calculate current line text
+        int line_start = 0;
+        for (int i = pauk_ui->cursor_position - 1; i >= 0; i--) {
+            if (new_value[i] == '\n') {
+                line_start = i + 1;
+                break;
+            }
+        }
+        
+        char current_line[256];
+        int line_len = pauk_ui->cursor_position - line_start;
+        strncpy(current_line, new_value + line_start, line_len);
+        current_line[line_len] = '\0';
+        
+        // Measure actual width with new character
+        char test_line[512];
+        snprintf(test_line, sizeof(test_line), "%s%c", current_line, event->c);
+        int new_width = estimate_text_width(test_line, DEFAULT_FONT_SIZE, "normal", "normal");
+        
+        // Count current lines
+        int line_count = 1;
+        for (int i = 0; new_value[i]; i++) {
+            if (new_value[i] == '\n') line_count++;
+        }
+        
+        // Use 5px margin on each side (total 10px)
+        int max_width = textarea_width - 10;
+        
+        if (new_width > max_width) {
+            // Would exceed width - add newline
+            if (line_count + 1 > textarea_rows) {
+                printf("⚠️ Textarea full\n");
+                modified = 0;
+            } else {
+                memmove(&new_value[pauk_ui->cursor_position + 1], 
+                        &new_value[pauk_ui->cursor_position], 
+                        strlen(new_value) - pauk_ui->cursor_position + 1);
+                new_value[pauk_ui->cursor_position] = '\n';
+                pauk_ui->cursor_position++;
+                modified = 1;
+            }
+        } else {
+            // Check height limit
+            if (line_count > textarea_rows && pauk_ui->cursor_position == (int)strlen(current)) {
+                printf("⚠️ Textarea full\n");
+                modified = 0;
+            } else {
+                memmove(&new_value[pauk_ui->cursor_position + 1], 
+                        &new_value[pauk_ui->cursor_position], 
+                        strlen(new_value) - pauk_ui->cursor_position + 1);
+                new_value[pauk_ui->cursor_position] = event->c;
+                pauk_ui->cursor_position++;
+                modified = 1;
+            }
+        }
+    } else {
+        // Input field
+        memmove(&new_value[pauk_ui->cursor_position + 1], 
+                &new_value[pauk_ui->cursor_position], 
+                strlen(new_value) - pauk_ui->cursor_position + 1);
+        new_value[pauk_ui->cursor_position] = event->c;
+        pauk_ui->cursor_position++;
+        modified = 1;
+    }
+}
+                // Handle left arrow
+                else if (event->key == KC_LEFT) {
+                    if (pauk_ui->cursor_position > 0) {
+                        pauk_ui->cursor_position--;
+                        modified = 1;
+                    }
+                }
+                // Handle right arrow
+                else if (event->key == KC_RIGHT) {
+                    if (pauk_ui->cursor_position < (int)strlen(current)) {
+                        pauk_ui->cursor_position++;
+                        modified = 1;
+                    }
+                }
+                
+                if (modified) {
+                    // Save to JSON
+                    set_json_string(pauk_ui->focused_element, "value", new_value);
+                    set_json_string(pauk_ui->focused_element, "input_value", new_value);
+                    
+                    // Find parent element for coordinates
+                    cJSON* render_element = pauk_ui->focused_element;
+                    const char* tag = get_json_string(render_element, "tag", "");
+                    if (strcmp(tag, "text") == 0) {
+                        int parent_id = get_json_number(render_element, "parent_id", -1);
+                        render_element = find_element_by_id(pauk_ui->rendering_json, parent_id);
+                    }
+                    
+                    // Get coordinates
+                    int abs_x = get_json_number(render_element, "x", 0) + 40;
+                    int abs_y = get_json_number(render_element, "y", 0) + 40;
+                    int width = get_json_number(render_element, "width", 0);
+                    int height = get_json_number(render_element, "height", 0);
+                    
+                    // Get font
+                    html_font_t *font = font_manager_get_font(&pauk_ui->font_manager, 
+                                                               pauk_ui->font_manager.default_font_index);
+                    
+                    const char *new_text = get_json_string(pauk_ui->focused_element, 
+                                                           is_textarea ? "value" : "input_value", "");
+                    
+                    // ===== ONLY REDRAW TEXT AREA (PRESERVE BORDER) =====
+                    if (is_textarea) {
+                        // Clear only the text area (inside the border)
+                        draw_filled_box_to_pixelmap(pauk_ui, abs_x + 2, abs_y + 2, width - 4, height - 4, 0xFFFFFFFF);
+                        
+                        // Draw multi-line text
+                        int line_height = DEFAULT_FONT_SIZE + 4;
+                        int max_lines = get_json_number(pauk_ui->focused_element, "textarea_rows", 4);
+                        int start_y = abs_y + (DEFAULT_FONT_SIZE / 2);
+                        
+                        char *text_copy = strdup(new_text);
+                        if (text_copy) {
+                            int current_y = start_y;
+                            int line_count = 0;
+                            char *line = strtok(text_copy, "\n");
+                            
+                            while (line && line_count < max_lines) {
+                                render_ttf_text_to_pixelmap(pauk_ui, line, abs_x + 10, current_y, 
+                                                            font, DEFAULT_FONT_SIZE, 0xFF000000, 0, 0);
+                                current_y += line_height;
+                                line = strtok(NULL, "\n");
+                                line_count++;
+                            }
+                            free(text_copy);
+                        }
+                    } else if (is_input) {
+                        // Clear only the text area
+                        draw_filled_box_to_pixelmap(pauk_ui, abs_x + 2, abs_y + 2, width - 4, height - 4, 0xFFFFFFFF);
+                        
+                        // Draw single line text
+                        int text_y = abs_y + (DEFAULT_FONT_SIZE/2);
+                        render_ttf_text_to_pixelmap(pauk_ui, new_text, abs_x + 10, text_y, 
+                                                    font, DEFAULT_FONT_SIZE, 0xFF000000, 0, 0);
+                    }
+                    
+                    // Force screen update
+                    pixelmap_to_bitmap_copy(pauk_ui);
+                    gfx_bitmap_render(pauk_ui->html_renderer->content_bitmap, 
+                                      &pauk_ui->list_rect, NULL);
+                    gfx_update(pauk_ui->gc);
+                    
+                    free(new_value);
+                    return;
+                }
+                
+                free(new_value);
+                return;
+            }
+        }
+        
+        // ===== NO FOCUSED FORM ELEMENT - handle browser navigation =====
         switch (event->key) {
             case KC_ENTER:
             case KC_NENTER:
-                // Check if search entry has focus and contains text
                 if (ui_entry_get_text(pauk_ui->search_entry) && 
                     str_length(ui_entry_get_text(pauk_ui->search_entry)) > 0) {
                     printf("Enter pressed in search field - triggering search\n");
-              //      search_button_clicked(pauk_ui->search_button, pauk_ui);
                 } else {
-                    // Enter key in address bar - trigger Go button
                     printf("Enter key pressed - triggering Go button\n");
-                //    go_button_clicked(pauk_ui->go_button, pauk_ui);
+                    go_button_clicked(pauk_ui->go_button, pauk_ui);
                 }
                 break;
                 
             case KC_LEFT:
-            printf("Left arrow pressed - going back\n");
-           // navigate_back(NULL, pauk_ui);  // Call the button callback version
+                printf("Left arrow pressed - going back\n");
+                navigate_back(NULL, pauk_ui);
                 break;
                 
             case KC_RIGHT:
-                // Right arrow - forward navigation
                 printf("Right arrow pressed - going forward\n");
-             //   navigate_forward(NULL, pauk_ui);  // Call the button callback version
                 break;
-
-                case KC_R:
+                
+            case KC_R:
                 if (event->mods & KM_CTRL) {
                     printf("Ctrl+R pressed - reloading page\n");
-             //       go_button_clicked(pauk_ui->go_button, pauk_ui);
-                } else if (event->mods & (KM_ALT | KM_SHIFT)) {
-                    // Allow Alt+R or Shift+R to pass through
-                    ui_window_def_kbd(window, event);
+                    go_button_clicked(pauk_ui->go_button, pauk_ui);
                 } else {
-                    // Allow regular 'r' key
                     ui_window_def_kbd(window, event);
                 }
                 break;
                 
             default:
-                        // Let the window handle regular text input
-                        ui_window_def_kbd(window, event);
+                ui_window_def_kbd(window, event);
                 break;
         }
     }
 }
+
 
 // Round function if not available
 float roundf(float value) {
@@ -284,28 +780,445 @@ void wnd_close(ui_window_t *window, void *arg)
     ui_quit(pauk_ui->ui);
 }
 
-void start_gui(void)
+// Callback for Bookmark button
+void bookmark_button_clicked(ui_pbutton_t *pbutton, void *arg)
 {
-    printf("Start GUI\n");
+return;
 
-    pauk_ui_t pauk_ui;
+}
 
-    errno_t rc = init_ui(&pauk_ui, UI_ANY_DEFAULT);
-    if (rc != EOK) {
-        fprintf(stderr, "Failed to initialize UI: %s\n", str_error(rc));
+#include "url_utils.h"
+
+void go_button_clicked(ui_pbutton_t *pbutton, void *arg) {
+    pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
+
+    // Get URL from address bar
+    const char *url_raw = ui_entry_get_text(pauk_ui->address_entry);
+
+    printf("=== GO BUTTON CLICKED ===\n");
+    printf("Raw address: %s\n", url_raw);
+
+    if (!url_raw || url_raw[0] == '\0') {
+        show_status_message(pauk_ui, "Please enter a URL", 3000);
         return;
     }
-    else{ printf("start gui pokrenut.\n");}
-
+  
+    // ===== DETECT LOCAL FILE =====
+    int is_local_file = 0;
+    char *url = NULL;
     
-
-    gfx_update(global_pauk_ui->gc);
-    run_ui(&pauk_ui);
+    // Check for localhost:// protocol
+    if (strstr(url_raw, "localhost://") == url_raw) {
+        is_local_file = 1;
+        // Remove localhost:// prefix
+        url = strdup(url_raw + 12);  // Skip "localhost://"
+        printf("📁 Local file via localhost://: %s\n", url);
+    }
+    // Check if it's a local file path (starts with / or ./ or ../ or has .html/.htm extension without protocol)
+    else if (url_raw[0] == '/' || 
+             (url_raw[0] == '.' && (url_raw[1] == '/' || url_raw[1] == '.')) ||
+             (strstr(url_raw, ".html") != NULL && strstr(url_raw, "://") == NULL) ||
+             (strstr(url_raw, ".htm") != NULL && strstr(url_raw, "://") == NULL)) {
+        is_local_file = 1;
+        url = strdup(url_raw);
+        printf("📁 Local file detected: %s\n", url);
+    }
+    // Check if it has a network protocol
+    else if (strstr(url_raw, "http://") == url_raw || strstr(url_raw, "https://") == url_raw) {
+        is_local_file = 0;
+        url = strdup(url_raw);
+        printf("🌐 Network URL: %s\n", url);
+    }
+    // No protocol - check if it looks like a local file or network address
+    else if (strstr(url_raw, "://") == NULL) {
+        // Check if it contains a dot (likely a domain like example.com) or is an IP
+        if ((strchr(url_raw, '.') != NULL && strchr(url_raw, '/') == NULL) ||
+            (url_raw[0] >= '0' && url_raw[0] <= '9')) {
+            // Looks like a domain or IP - treat as network
+            is_local_file = 0;
+            asprintf(&url, "http://%s", url_raw);
+            printf("🌐 Network URL (added http://): %s\n", url);
+        } else {
+            // Looks like a local file path - treat as local
+            is_local_file = 1;
+            url = strdup(url_raw);
+            printf("📁 Local file (no protocol): %s\n", url);
+        }
+    }
+    // Malformed protocol (http:/ or https:/)
+    else if ((strstr(url_raw, "http:/") != NULL && strstr(url_raw, "http://") == NULL) ||
+             (strstr(url_raw, "https:/") != NULL && strstr(url_raw, "https://") == NULL)) {
+        is_local_file = 0;
+        if (strstr(url_raw, "https:/") != NULL) {
+            asprintf(&url, "https://%s", url_raw + 7);
+        } else {
+            asprintf(&url, "http://%s", url_raw + 6);
+        }
+        printf("🌐 Fixed malformed URL: %s\n", url);
+    }
+    else {
+        // Default to network
+        is_local_file = 0;
+        url = strdup(url_raw);
+    }
     
-   
+    if (!url) {
+        show_status_message(pauk_ui, "Invalid URL", 3000);
+        return;
+    }
+    
+        // =========================================================================
+    // 🚀 PAUK UI PAMETNI RUTER: ON-DEMAND SWITCH REFORMATIRANJE URL-A
+    // Presreće adresu i menja je u memoriji pre slanja mrežnog zahteva
+    // =========================================================================
+    if (!is_local_file && url != NULL) {
+        char temp_hostname[256] = "";
+        const char *proto_end = strstr(url, "://");
+        
+        if (proto_end) {
+            const char *host_start = proto_end + 3;
+            const char *host_end = strchr(host_start, '/');
+            int h_len = host_end ? (host_end - host_start) : (int)strlen(host_start);
+            
+            if (h_len > 255) h_len = 255;
+            strncpy(temp_hostname, host_start, h_len);
+            temp_hostname[h_len] = '\0';
+            
+            char *colon_ptr = strchr(temp_hostname, ':');
+            if (colon_ptr) *colon_ptr = '\0';
+        }
+
+        char cisti_domen[256];
+        strcpy(cisti_domen, temp_hostname);
+        if (strncasecmp(temp_hostname, "www.", 4) == 0) {
+            strcpy(cisti_domen, temp_hostname + 4);
+        }
+        
+        // Dodela ID-ja za brzi switch ruter
+        int ruter_sajt_id = 0;
+        if (strstr(cisti_domen, "google.") != NULL) {
+            if (strstr(url, "/search") != NULL || strstr(url, "?q=") != NULL) {
+                ruter_sajt_id = 5;
+            } else {
+                ruter_sajt_id = 1;
+            }
+        } else if (strstr(cisti_domen, "yahoo.") != NULL) {
+            ruter_sajt_id = 3;
+        } else if (strstr(cisti_domen, "duckduckgo.") != NULL) {
+            if (strchr(url, '?') != NULL) {
+                ruter_sajt_id = 6;
+            } else {
+                ruter_sajt_id = 2;
+            }
+        } else if (strstr(cisti_domen, "bing.") != NULL) {
+            ruter_sajt_id = 4;
+        } else if (strstr(cisti_domen, "mojeek.") != NULL) {
+            ruter_sajt_id = 7;  // Mojeek
+        }
+        
+        char protocol[16] = "https";
+        if (proto_end) {
+            size_t p_len = proto_end - url;
+            if (p_len < sizeof(protocol)) {
+                memcpy(protocol, url, p_len);
+                protocol[p_len] = '\0';
+            }
+        }
+        
+        const char *path_start = proto_end ? strchr(proto_end + 3, '/') : "/";
+        if (!path_start) path_start = "/";
+
+        char *novo_sklopljeni_url = NULL;
+
+        switch (ruter_sajt_id) {
+            case 1:
+                // LISTA 1: Google i Yahoo MORAJU imati 'www.' ispred domena
+                if (strncasecmp(temp_hostname, "www.", 4) != 0) {
+                    printf("⚙️ [UI Router] Google/Yahoo detektovan bez www. Pokrećem auto-upis...\n");
+                    asprintf(&novo_sklopljeni_url, "%s://www.%s%s", protocol, temp_hostname, path_start);
+                }
+                break;
+
+            case 3:
+                // LISTA 3: DuckDuckGo NE SME imati 'www.' ispred domena radi ikonica
+                if (strncasecmp(temp_hostname, "www.", 4) == 0) {
+                    printf("⚙️ [UI Router] DuckDuckGo detektovan sa www. Skidam višak radi učitavanja ikonica...\n");
+                    asprintf(&novo_sklopljeni_url, "%s://%s%s", protocol, cisti_domen, path_start);
+                }
+                break;
+
+                case 4:
+                // LISTA 4 (Bing): Samo osiguravamo 'www.' na samom ulazu u UI
+                if (strncasecmp(temp_hostname, "www.", 4) != 0) {
+                    printf("⚙️ [UI Router] Bing detektovan bez www. Dodajem poddomen...\n");
+                    asprintf(&novo_sklopljeni_url, "%s://www.%s%s", protocol, temp_hostname, path_start);
+                }
+                break;
+
+            default:
+                break;
+        }
+
+        if (novo_sklopljeni_url) {
+            free(url);
+            url = novo_sklopljeni_url; 
+            printf("🌐 [UI Router] URL uspešno i konačno normalizovan na: %s\n", url);
+        }
+    }
+    // =========================================================================
+
+    // Update address bar with normalized URL
+    ui_entry_set_text(pauk_ui->address_entry, url);
+    pauk_ui->current_address = strdup(url);
+    if (!pauk_ui->navigating) {
+        add_to_history(pauk_ui, url);
+    }
+    // Update status
+    show_status_message(pauk_ui, "Ucitavam stranu...", 1000);
+
+    if (is_local_file) {
+        // ========== LOCAL FILE ==========
+        printf("📁 Loading local file: %s\n", url);
+        
+        // Check if file exists
+        FILE *test = fopen(url, "r");
+        if (test) {
+            fclose(test);
+            load_and_render_page(url,NULL);
+            show_status_message(pauk_ui, "Strana je ucitana!", 2000);
+        } else {
+            char *msg = NULL;
+            asprintf(&msg, "Fajl nije pronadjen: %s", url);
+            if (msg) {
+                show_status_message(pauk_ui, msg, 3000);
+                free(msg);
+            } else {
+                show_status_message(pauk_ui, "Fajl nije pronadjen", 3000);
+            }
+        }
+    } else {
+        // ========== NETWORK PAGE ==========
+        printf("🌐 Network URL detected: %s\n", url);
+        
+        // Parse URL to get host and port
+        int is_https = (strstr(url, "https://") != NULL);
+        uint16_t port = is_https ? 443 : 80;
+        
+        // Extract hostname
+        char hostname[256];
+        const char *host_start = strstr(url, "://");
+        if (host_start) {
+            host_start += 3;
+            const char *host_end = strchr(host_start, '/');
+            if (host_end) {
+                int len = host_end - host_start;
+                if (len > 255) len = 255;
+                strncpy(hostname, host_start, len);
+                hostname[len] = '\0';
+            } else {
+                strncpy(hostname, host_start, 255);
+                hostname[255] = '\0';
+            }
+
+            // PROVERA I IZDVAJANJE PORTA IZ HOSTNAME-A (npr. :80)
+            char *port_ptr = strchr(hostname, ':');
+            if (port_ptr) {
+                *port_ptr = '\0'; // Secemo hostname na dvotacki
+                port = (uint16_t)strtoul(port_ptr + 1, NULL, 10);
+                // Ponovo proveravamo is_https na osnovu novog porta
+                is_https = (port == 443); 
+                printf("⚠️ Port iz URL-a: Host=%s, Port=%d, HTTPS=%d\n", 
+                       hostname, port, is_https);
+            }
+
+            printf("Host: %s, Port: %d\n", hostname, port);
+        } else {
+            show_status_message(pauk_ui, "Neispravan URL format", 3000);
+            free(url);
+            pauk_ui->current_address = NULL;
+            return;
+        }
+
+        
+        // Create TCP connection
+        inet_addr_t addr;
+        errno_t rc = resolve_host(hostname, &addr);
+        if (rc != EOK) {
+            char *msg = NULL;
+            asprintf(&msg, "Failed to resolve: %s", hostname);
+            if (msg) {
+                show_status_message(pauk_ui, msg, 3000);
+                free(msg);
+            } else {
+                show_status_message(pauk_ui, "Ne mogu da odredim Host", 3000);
+            }
+            pauk_ui->current_address = NULL;
+            free(url);
+            return;
+        }
+        
+        tcp_t *tcp = NULL;
+        tcp_conn_t *conn = NULL;
+        rc = create_tcp_connection(addr, port, &tcp, &conn);
+        if (rc != EOK) {
+            show_status_message(pauk_ui, "Konekcija pukla", 3000);
+            free(url);
+            return;
+        }
+        
+        char *content = NULL;
+        size_t content_size = 0;
+        
+        if (is_https) {
+            rc = fetch_https_content(url, conn, &content, &content_size, 0);
+        } else {
+            rc = fetch_http_content(url, conn, &content, &content_size, 0);
+        }
+        
+        tcp_conn_destroy(conn);
+        tcp_destroy(tcp);
+        
+        if (rc == EOK && content != NULL && content_size > 0) {
+            // Save to temp file
+            char temp_file[] = "/tmp/pauk_page.html";
+         
+            FILE *f = fopen(temp_file, "w");
+            if (f) {
+                fwrite(content, 1, content_size, f);
+                fclose(f);
+                kopiraj_fajl(temp_file);        
+                // Load the page from temp file
+                load_and_render_page(temp_file, url);
+                unlink(temp_file);
+                show_status_message(pauk_ui, "Strana je ucitana", 2000);
+            } else {
+                show_status_message(pauk_ui, "Ne mogu da sacuvam stranu", 3000);
+            }
+            free(content);
+        }  else {
+            // =========================================================================
+            // 🚨 SIKURNOSNI UI ŠTIT ZA GREŠKE U KONEKCIJI (POPRAVLJENO)
+            // Hvata bilo koji SSL/TLS pad (uključujući Bing) i ispisuje tvoju poruku!
+            // =========================================================================
+            printf("❌ [Network Error] Konekcija ili Handshake propao sa kodom: %d\n", rc);
+            
+            // Ispisujemo tvoju tačnu poruku na status bar pretraživača
+            show_status_message(pauk_ui, "Strana NIJE podrzana!", 6000);
+            
+            // Čistimo memoriju adrese da se sistem ne bi zaglavio
+            pauk_ui->current_address = NULL;
+            if (url) {
+                free(url);
+                url = NULL;
+            }
+            return; // Prekidamo izvršavanje, prozor ostaje bezbedno otvoren i aktivan!
+        }
+    }
+    
+    free(url);
+    
+    // Force update
+    gfx_update(pauk_ui->gc);
+    ui_window_paint(pauk_ui->window);
+}
+
+// Bookmark click handler
+void bookmark_clicked(ui_menu_entry_t *mentry, void *arg) {
+    int index = (int)(intptr_t)arg;
+    
+    // Remove the NULL check for the fixed array
+    if (index >= 0 && index < bookmark_count) {
+        // Set the URL in the address bar
+        ui_entry_set_text(global_pauk_ui->address_entry, bookmarks[index].url);
+        
+        // Trigger the Go button click
+        go_button_clicked(global_pauk_ui->go_button, global_pauk_ui);
+    }
+}
+
+void navigate_back(ui_pbutton_t *pbutton, void *arg)
+{
+    pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
+    if (pauk_ui->history_current > 0) {
+        pauk_ui->navigating = 1; 
+        pauk_ui->history_current--;
+        const char *prev_url = pauk_ui->history[pauk_ui->history_current];
+        ui_entry_set_text(pauk_ui->address_entry, prev_url);
+        go_button_clicked(pauk_ui->go_button, pauk_ui);
+    }
+}
+
+// Callback for Refresh button
+void refresh_page(ui_pbutton_t *pbutton, void *arg)
+{
+    pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
+    printf("Refresh page requested\n");
+    go_button_clicked(pauk_ui->go_button, pauk_ui);
+}
+
+// Callback for Forward button
+void navigate_forward(ui_pbutton_t *pbutton, void *arg)
+{
+    pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
+    if (pauk_ui->history_current < pauk_ui->history_count - 1) {
+        pauk_ui->history_current++;
+        const char *next_url = pauk_ui->history[pauk_ui->history_current];
+        ui_entry_set_text(pauk_ui->address_entry, next_url);
+        go_button_clicked(pauk_ui->go_button, pauk_ui);
+    }
 }
 
 
+void render_multiline_text(pauk_ui_t *pauk_ui, const char *text, int x, int y, 
+    html_font_t *font, int font_size, uint32_t color,
+    int line_height) {
+if (!text || !font) return;
+
+char *text_copy = strdup(text);
+if (!text_copy) return;
+
+int current_y = y;
+char *line = strtok(text_copy, "\n");
+
+while (line) {
+// Render this line
+render_ttf_text_to_pixelmap(pauk_ui, line, x, current_y, 
+             font, font_size, color, 0, 0);
+
+// Move to next line
+current_y += line_height;
+line = strtok(NULL, "\n");
+}
+
+free(text_copy);
+}
+
+// Save function
+void save_debug_snapshot(pauk_ui_t *pauk_ui) {
+    if (!pauk_ui->rendering_json) return;
+    
+    const char *filename = "debug_output.txt";
+    
+    FILE *f = fopen(filename, "wb");
+    if (f) {
+        char *json_str = cJSON_Print(pauk_ui->rendering_json);
+        if (json_str) {
+            fputs(json_str, f);
+            free(json_str);
+            printf("✅ Debug snapshot saved: %s\n", filename);
+            
+
+        } else {
+            printf("❌ Failed to print output_debug.html file\n");
+        }
+        fclose(f);
+                   // Optional: Copy to server
+                   kopiraj_fajl(filename);
+    } else {
+        printf("❌ Failed to open %s for writing\n", filename);
+    }
+     
+}
 
 errno_t init_ui(pauk_ui_t *pauk_ui, const char *display_spec)
 {
@@ -314,7 +1227,8 @@ errno_t init_ui(pauk_ui_t *pauk_ui, const char *display_spec)
     ui_menu_entry_t *mexit;
     ui_menu_entry_t *mabout;
  
-
+    pauk_ui->focused_element = NULL;
+    pauk_ui->cursor_position = 0;
 
     gfx_rect_t rect;
 errno_t rc;
@@ -365,7 +1279,7 @@ pauk_ui->globY = 0;
     }
     ui_window_get_app_rect(pauk_ui->window, &pauk_ui->win_rect_base);
 
-  //  init_navigation_history(pauk_ui);
+   init_navigation_history(pauk_ui);
 
 
     ui_window_set_cb(pauk_ui->window, &window_cb, (void *)pauk_ui);
@@ -412,23 +1326,23 @@ pauk_ui->globY = 0;
     }
     ui_menu_entry_set_cb(mabout, help_about, (void *)pauk_ui);
 
- /*   
+
 // Load bookmarks from file
  rc = load_bookmarks();
 if (rc != EOK) {
     if (DEB_WARNING){  printf("Failed to load bookmarks: %s\n", str_error(rc));}
     // Continue without bookmarks
 }
-*/
+
 // Bookmarks menu
 rc = ui_menu_dd_create(pauk_ui->mbar, "~B~ookmarks", NULL, &pauk_ui->mbookmarks);
 if (rc != EOK) {
     if (DEB_INIT_MENU){printf("Error creating bookmarks menu.\n");}
     return rc;
 }
-printf("Bookmarks menu created successfully at address: %p\n", (void*)pauk_ui->mbookmarks);
+//printf("Bookmarks menu created successfully at address: %p\n", (void*)pauk_ui->mbookmarks);
 
-/*
+
 if (bookmark_count > 0) {
     if (DEB_INIT_MENU){ printf("Number of bookmarks: %d\n", bookmark_count);}
     
@@ -458,7 +1372,7 @@ if (bookmark_count > 0) {
         if (DEB_INIT_MENU){printf("Error creating 'No bookmarks' entry: %s\n", str_error(rc));}
     }
 }
-*/
+
    // Position menu bar
 if (ui_is_textmode(pauk_ui->ui)) {
     rect.p0.x = 1;
@@ -478,10 +1392,10 @@ if (ui_is_textmode(pauk_ui->ui)) {
     pauk_ui->current_y1 = SYSTEM_MENU_HEIGHT + ROW_SPACING+20;
    
     // NAVIGACIJA DUGMAD!
-static ui_pbutton_cb_t resize_button_cb = { .clicked = change_size }; // change_size  
-static ui_pbutton_cb_t back_button_cb = { .clicked = NULL }; //navigate_back
-static ui_pbutton_cb_t refresh_button_cb = { .clicked = NULL }; //refresh_page
-static ui_pbutton_cb_t forward_button_cb = { .clicked = NULL}; //navigate_forward 
+static ui_pbutton_cb_t resize_button_cb = { .clicked = change_size }; 
+static ui_pbutton_cb_t back_button_cb = { .clicked = navigate_back };
+static ui_pbutton_cb_t refresh_button_cb = { .clicked = refresh_page };
+static ui_pbutton_cb_t forward_button_cb = { .clicked = navigate_forward };
 
 
 // Resize  button (<-)
@@ -514,16 +1428,22 @@ rect.p1.x = CONTENT_MARGIN + 33;  // 30px width per button
 rect.p1.y = pauk_ui->current_y1 + 25;
 ui_pbutton_set_rect(pauk_ui->back_button, &rect);
 pauk_ui->back_button_base_rect =rect;
+rc = ui_fixed_add(pauk_ui->fixed, ui_pbutton_ctl(pauk_ui->back_button));
+if (rc != EOK) return rc;
 
 rect.p0.x += 33;  // 5px spacing between buttons
 rect.p1.x += 33;
 ui_pbutton_set_rect(pauk_ui->refresh_button, &rect);
 pauk_ui->refresh_button_base_rect =rect;
+rc = ui_fixed_add(pauk_ui->fixed, ui_pbutton_ctl(pauk_ui->refresh_button));
+if (rc != EOK) return rc;
 
 rect.p0.x += 33;
 rect.p1.x += 30;
 ui_pbutton_set_rect(pauk_ui->forward_button, &rect);
 pauk_ui->forward_button_base_rect =rect;
+rc = ui_fixed_add(pauk_ui->fixed, ui_pbutton_ctl(pauk_ui->forward_button));
+if (rc != EOK) return rc;
 // Resize 
 
 pauk_ui->resize_button_rect.p0.x = 1030 -90;
@@ -576,7 +1496,7 @@ if (ui_is_textmode(pauk_ui->ui)) {
     if (rc != EOK) return rc;
 
     // Go button
-    static ui_pbutton_cb_t pbutton_cb = { .clicked = NULL }; //go_button_clicked
+    static ui_pbutton_cb_t pbutton_cb = { .clicked = go_button_clicked }; //go_button_clicked
     rc = ui_pbutton_create(ui_window_get_res(pauk_ui->window), "Go", &pauk_ui->go_button);
     if (rc != EOK) return rc;
 
@@ -596,7 +1516,7 @@ if (ui_is_textmode(pauk_ui->ui)) {
     if (rc != EOK) return rc;
 
 // Bookmark button - create and position
-static ui_pbutton_cb_t bookmark_button_cb = { .clicked = NULL }; //bookmark_button_clicked
+static ui_pbutton_cb_t bookmark_button_cb = { .clicked = bookmark_button_clicked}; //bookmark_button_clicked
 rc = ui_pbutton_create(ui_window_get_res(pauk_ui->window), "Bookmark", &pauk_ui->bookmark_button);
 if (rc != EOK) return rc;
 ui_pbutton_set_cb(pauk_ui->bookmark_button, &bookmark_button_cb, (void *)pauk_ui);
@@ -655,7 +1575,7 @@ if (rc != EOK) return rc;
 
 
     // Search button - create and position
-static ui_pbutton_cb_t search_button_cb = { .clicked = NULL }; //search_button_clicked
+static ui_pbutton_cb_t search_button_cb = { .clicked = search_button_clicked  };
 rc = ui_pbutton_create(ui_window_get_res(pauk_ui->window), "Trazi!", &pauk_ui->search_button);
 if (rc != EOK) return rc;
 ui_pbutton_set_cb(pauk_ui->search_button, &search_button_cb, (void *)pauk_ui);
@@ -1362,14 +2282,6 @@ pauk_ui->settings_fixed = settings_fixed;
     // Add fixed layout to window
     ui_window_add(pauk_ui->window, ui_fixed_ctl(pauk_ui->fixed));
 
-
-
-// HTML INIT START
-font_manager_init(&pauk_ui->font_manager);
-font_manager_load_fonts(&pauk_ui->font_manager, "/data/font/");
-
-font_manager_init_substitutions(&pauk_ui->font_manager);
-
 pauk_ui->html_renderer = malloc(sizeof(html_renderer_t));
 if (pauk_ui->html_renderer) {
     html_renderer_init(pauk_ui->html_renderer, pauk_ui->gc, &pauk_ui->font_manager);
@@ -1383,7 +2295,26 @@ if (pauk_ui->html_renderer) {
  
     html_renderer_create_bitmap(pauk_ui->html_renderer, large_bitmap_rect);
     
+        // ALSO create virtual pixelmap for scrolling
+        pauk_ui->virtual_pixmap = create_virtual_pixelmap(1200, 15000);
     
+        if (pauk_ui->virtual_pixmap == NULL) {
+            printf("[ERROR] Failed to create virtual pixelmap\n");
+            // Handle error...
+        } else {
+           // printf("[PIXELMAP] Created at init_ui: %ldx%ld\n", 
+            //       pauk_ui->virtual_pixmap->width, pauk_ui->virtual_pixmap->height);
+        }
+        
+        // Reset scrollbar to top
+        if (pauk_ui->vscrollbar) {
+            ui_scrollbar_set_pos(pauk_ui->vscrollbar, 0);
+        }
+        
+        pauk_ui->scroll_y = 0;
+        pauk_ui->content_height = 0;
+        pauk_ui->content_bitmap = pauk_ui->html_renderer->content_bitmap;
+
     // CRITICAL: Convert bitmap to UI image but use the normal display area
     if (pauk_ui->html_renderer->content_bitmap) {
 
@@ -1408,19 +2339,21 @@ if (pauk_ui->html_renderer) {
         }
         
     }
+
+
 }
 
 pauk_ui->use_html_rendering = true;
 // HTML INIT KRAJ
-
-test_simple_text( pauk_ui);
-
     // Paint window
 
     rc = ui_window_paint(pauk_ui->window);
     if (rc != EOK) return rc;
     rc = gfx_update(pauk_ui->gc);
 
+// startujem tajmer poruka status bara
+pauk_ui->status_timer = NULL;
+pauk_ui->navigating = 0;
     return EOK;
 }
 
@@ -1451,7 +2384,7 @@ errno_t html_renderer_create_bitmap(html_renderer_t *renderer, gfx_rect_t rect) 
     // Calculate required memory
     alloc.pitch = width * 4; // 4 bytes per pixel (ARGB)
     size_t bitmap_size = alloc.pitch * height;
-    printf("Allocating %zu bytes for bitmap (pitch: %d)\n", bitmap_size, alloc.pitch);
+   // printf("Allocating %zu bytes for bitmap (pitch: %d)\n", bitmap_size, alloc.pitch);
     
     // Allocate memory for bitmap data
     alloc.pixels = malloc(bitmap_size);
@@ -1459,10 +2392,10 @@ errno_t html_renderer_create_bitmap(html_renderer_t *renderer, gfx_rect_t rect) 
         printf("Failed to allocate %zu bytes for bitmap\n", bitmap_size);
         return ENOMEM;
     }
-    printf("Alokacija Zavrsena.\n");
+   // printf("Alokacija Zavrsena.\n");
     // Initialize bitmap to white background
     memset(alloc.pixels, 0xFF, bitmap_size); // 0xFF = white in ARGB
-    printf("Alokacija Pixela za bitmap boju zavrsena.\n");
+  //  printf("Alokacija Pixela za bitmap boju zavrsena.\n");
     // Create bitmap using our allocated memory
     errno_t rc = gfx_bitmap_create(renderer->gc, &params, &alloc, &renderer->content_bitmap);
     if (rc != EOK) {
@@ -1470,15 +2403,41 @@ errno_t html_renderer_create_bitmap(html_renderer_t *renderer, gfx_rect_t rect) 
         free(alloc.pixels);
         return rc;
     }
-    printf("Bitmapa napravljena.\n");
+  //  printf("Bitmapa napravljena.\n");
     // Set bitmap parameters
     renderer->bitmap_rect = params.rect;
     renderer->view_width = width;
     renderer->view_height = height;
     renderer->needs_redraw = true;
     
-    printf("Successfully created bitmap %dx%d with %zu bytes\n", width, height, bitmap_size);
+  //  printf("Successfully created bitmap %dx%d with %zu bytes\n", width, height, bitmap_size);
     return EOK;
+}
+
+
+void get_page_dimensions(cJSON *element, int *max_x, int *max_y) {
+    if (!element) return;
+    
+    // Get this element's bottom-right corner
+    int x = get_json_number(element, "x", 0);
+    int y = get_json_number(element, "y", 0);
+    int w = get_json_number(element, "width", 0);
+    int h = get_json_number(element, "height", 0);
+    
+    int right = x + w;
+    int bottom = y + h;
+    
+    if (right > *max_x) *max_x = right;
+    if (bottom > *max_y) *max_y = bottom;
+    
+    // Recurse into children
+    cJSON *children = cJSON_GetObjectItem(element, "children");
+    if (children && cJSON_IsArray(children)) {
+        cJSON *child;
+        cJSON_ArrayForEach(child, children) {
+            get_page_dimensions(child, max_x, max_y);
+        }
+    }
 }
 
 
@@ -1568,174 +2527,237 @@ void run_ui(pauk_ui_t *pauk_ui)
 
 }
 
+/**
+ * Create pixelmap for virtual content
+ * COMPLETE function
+ */
+pixelmap_t* create_virtual_pixelmap(int width, int height) {
+    if (width <= 0 || height <= 0) return NULL;
+    
+    pixelmap_t* pixmap = malloc(sizeof(pixelmap_t));
+    if (pixmap == NULL) return NULL;
+    
+    pixmap->width = width;
+    pixmap->height = height;
+    
+    size_t pixel_count = width * height;
+    pixmap->data = malloc(pixel_count * sizeof(pixel_t));
+    
+    if (pixmap->data == NULL) {
+        free(pixmap);
+        return NULL;
+    }
+    
+    // Fill with white
+    pixel_t white = PIXEL(255, 255, 255, 255);
+    for (size_t i = 0; i < pixel_count; i++) {
+        pixmap->data[i] = white;
+    }
+    
+    return pixmap;
+}
 
-// PROBAAAA 
-/*ova kodna jedinica predstavlja test funkciju 
-koja demonstrira renderovanje teksta i trougla
- sa određenim bojom i pozicijom na 
-grafičkom korisničkom interfejsu (GUI).
-*/
-void test_simple_text(pauk_ui_t *pauk_ui) {
-    printf("[TEST] Font-only test\n");
-
-    // Clear with white
-    int width = pauk_ui->list_rect.p1.x - pauk_ui->list_rect.p0.x;
-    int height = pauk_ui->list_rect.p1.y - pauk_ui->list_rect.p0.y;
-    clear_area_css(pauk_ui, 0, 0, width, height, "white");
-
-    // Get font (should be Arial from your mappings)
-    html_font_t *font = font_manager_get_by_name(&pauk_ui->font_manager, "Arial");
-    if (!font) {
-        printf("ERROR: No font found!\n");
+/**
+ * Copy pixelmap to bitmap - EXACT pattern from your working code
+ */
+void pixelmap_to_bitmap_copy(pauk_ui_t* pauk_ui) {
+    if (!pauk_ui || !pauk_ui->content_bitmap || !pauk_ui->virtual_pixmap) {
+        printf("[ERROR] Missing components\n");
         return;
     }
+    
+    // Get bitmap info
+    gfx_bitmap_alloc_t alloc;
+    gfx_bitmap_get_alloc(pauk_ui->content_bitmap, &alloc);
+    
+    int bytes_per_pixel = 4;
+    int bitmap_width = alloc.pitch / bytes_per_pixel;
+    int bitmap_height = pauk_ui->html_renderer->view_height;
+    
+    uint8_t* bitmap_data = (uint8_t*)alloc.pixels;
+    pixel_t* pix_data = pauk_ui->virtual_pixmap->data;
+    
+    // Get bitmap DESTINATION position in UI
+    int bitmap_x = pauk_ui->list_rect.p0.x;  // Where bitmap starts in UI
+   // int bitmap_y = pauk_ui->list_rect.p0.y;  // Where bitmap starts in UI
+    
 
-    // Test different fonts/styles
-    int y = 50;
-    render_ttf_text_css(pauk_ui, "Arial 24pt", 50, y, font, 24.0f, "black");
-    y += 40;
     
-    render_ttf_text_css(pauk_ui, "Blue Text", 50, y, font, 20.0f, "blue");
-    y += 35;
-    
-    render_ttf_text_css(pauk_ui, "Red Bold", 50, y, font, 18.0f, "red");
-    y += 30;
-    
-    render_ttf_text_css(pauk_ui, "Green Medium", 50, y, font, 16.0f, "green");
-    y += 25;
-    
-    render_ttf_text_css(pauk_ui, "Gray Small", 50, y, font, 14.0f, "#666666");
-    y += 20;
-    
-    render_ttf_text_css(pauk_ui, "Purple Tiny", 50, y, font, 12.0f, "purple");
-    
-    printf("[TEST] Font test done\n");
-} 
+    // Fill bitmap row by row
+    for (int dest_y = 0; dest_y < bitmap_height; dest_y++) {
+        // CRITICAL FIX: Source Y in pixelmap = scroll position + destination row
+        int source_y_in_pixelmap = pauk_ui->scroll_y + dest_y;  // NO bitmap_y here!
+        
+        // Check if we have pixelmap content for this row
+        if (source_y_in_pixelmap < 0 || (sysarg_t)source_y_in_pixelmap >= pauk_ui->virtual_pixmap->height) {
+            // No pixelmap content - fill row with white
+            for (int x = 0; x < bitmap_width; x++) {
+                size_t idx = (dest_y * alloc.pitch) + (x * bytes_per_pixel);
+                bitmap_data[idx] = 255;      // B
+                bitmap_data[idx + 1] = 255;  // G
+                bitmap_data[idx + 2] = 255;  // R
+                bitmap_data[idx + 3] = 255;  // A
+            }
+            continue;
+        } 
+        
+        // Copy from pixelmap to bitmap
+        for (int dest_x = 0; dest_x < bitmap_width; dest_x++) {
+            // Source X in pixelmap = bitmap X position + destination column
+            int source_x_in_pixelmap = bitmap_x + dest_x;  // This part is CORRECT
+            
+            size_t bitmap_idx = (dest_y * alloc.pitch) + (dest_x * bytes_per_pixel);
+            
+            if ((sysarg_t)source_x_in_pixelmap < pauk_ui->virtual_pixmap->width) {
+                // We have pixelmap content - copy it
+                pixel_t pixel = pix_data[source_y_in_pixelmap * pauk_ui->virtual_pixmap->width + source_x_in_pixelmap];
+                
+                // Convert pixelmap pixel (ARGB) to bitmap (BGRA or whatever your system uses)
+                bitmap_data[bitmap_idx] = pixel & 0xFF;           // B
+                bitmap_data[bitmap_idx + 1] = (pixel >> 8) & 0xFF;  // G
+                bitmap_data[bitmap_idx + 2] = (pixel >> 16) & 0xFF; // R
+                bitmap_data[bitmap_idx + 3] = (pixel >> 24) & 0xFF; // A
+            } else {
+                // No pixelmap content for this column - fill with white
+                bitmap_data[bitmap_idx] = 255;      // B
+                bitmap_data[bitmap_idx + 1] = 255;  // G
+                bitmap_data[bitmap_idx + 2] = 255;  // R
+                bitmap_data[bitmap_idx + 3] = 255;  // A
+            }
+        }
+    }
+}
 
 
-void render_ttf_text(pauk_ui_t *pauk_ui, const char *text, int x, int y,
-    html_font_t *font, float size, gfx_color_t *color)
+void init_navigation_history(pauk_ui_t *pauk_ui)
 {
-if (!pauk_ui || !pauk_ui->html_renderer || !text)
-return;
-
-html_renderer_t *renderer = pauk_ui->html_renderer;
-if (!renderer->content_bitmap) {
-    printf("[TTF] No content bitmap in renderer\n");
-return;
-}
-printf("[TTF] IMA content bitmap in renderer\n");
-
-// Get bitmap allocation
-gfx_bitmap_alloc_t alloc;
-if (gfx_bitmap_get_alloc(renderer->content_bitmap, &alloc) != EOK) {
-     printf("[TTF] Failed to get bitmap allocation\n");
-return;
-}
-printf("[TTF] URADIO bitmap allokaciju\n");
-
-uint32_t *pixels = (uint32_t *)alloc.pixels;
-int stride = alloc.pitch / 4;
-int width  = renderer->view_width;
-int height = renderer->view_height;
-
-// Use provided font or fallback to default
-html_font_t *use_font = font ? font :
-font_manager_get_font(&pauk_ui->font_manager, 
-             pauk_ui->font_manager.default_font_index);
-
-if (!use_font || !use_font->is_loaded) {
-    printf("[TTF] Font not loaded (expecting default font)\n");
-return;
+    for (int i = 0; i < 100; i++) {
+        pauk_ui->history[i] = NULL;
+    }
+    pauk_ui->history_current = -1;
+    pauk_ui->history_size = 100;
+    pauk_ui->history_count = 0;
 }
 
-printf("[TTF] Font UCITAN (expecting default font)\n");
-
-stbtt_fontinfo *info = &use_font->info;
-float scale = stbtt_ScaleForPixelHeight(info, size);
-
-// Get vertical metrics
-int ascent, descent, lineGap;
-stbtt_GetFontVMetrics(info, &ascent, &descent, &lineGap);
-int baseline = (int)roundf(ascent * scale);
-
-printf("[TTF] OK FONT METRICS\n");
-
-int pen_x = x;
-int pen_y = y + baseline;
-
-// Get RGB color components
-uint16_t rr = 0, gg = 0, bb = 0;
-if (color)
-gfx_color_get_rgb_i16(color, &rr, &gg, &bb);
-uint8_t r = rr >> 8, g = gg >> 8, b = bb >> 8;
-
-const unsigned char *p = (const unsigned char *)text;
-while (*p) {
-int code_point = *p;
-
-// Glyph metrics
-int advance, lsb;
-stbtt_GetCodepointHMetrics(info, code_point, &advance, &lsb);
-
-int x0, y0, x1, y1;
-stbtt_GetCodepointBitmapBox(info, code_point, scale, scale, &x0, &y0, &x1, &y1);
-
-int w = x1 - x0;
-int h = y1 - y0;
-
-if (w > 0 && h > 0) {
-unsigned char *bitmap = calloc(w * h, 1);
-if (!bitmap) {
-printf("[TTF] Memory allocation failed for glyph\n");
-return;
-}
-printf("[TTF] OK MEMORY ALOKACIJA ZA GLUPH\n");
-
-stbtt_MakeCodepointBitmap(info, bitmap, w, h, w, scale, scale, code_point);
-printf("[TTF] OK KODEPOINT BITMAP\n");
-int draw_x = pen_x + (int)roundf(lsb * scale);
-int draw_y = pen_y + y0;
-
-for (int by = 0; by < h; by++) {
-for (int bx = 0; bx < w; bx++) {
-   unsigned char a = bitmap[by * w + bx];
-   if (a == 0) continue;
-
-   int dx = draw_x + bx;
-   int dy = draw_y + by;
-   if (dx < 0 || dy < 0 || dx >= width || dy >= height)
-       continue;
-
-   uint32_t *dst = &pixels[dy * stride + dx];
-   uint32_t old = *dst;
-
-   uint8_t old_r = (old >> 16) & 0xFF;
-   uint8_t old_g = (old >> 8) & 0xFF;
-   uint8_t old_b = old & 0xFF;
-
-   uint8_t inv_a = 255 - a;
-   uint8_t new_r = (r * a + old_r * inv_a) / 255;
-   uint8_t new_g = (g * a + old_g * inv_a) / 255;
-   uint8_t new_b = (b * a + old_b * inv_a) / 255;
-
-   *dst = 0xFF000000 | (new_r << 16) | (new_g << 8) | new_b;
-}
+// Add URL to history
+void add_to_history(pauk_ui_t *pauk_ui, const char *url)
+{
+    if (!pauk_ui || !url) return;
+    
+    // ===== PROVERI DA LI JE URL ISTI KAO PREDHODNI =====
+    if (pauk_ui->history_count > 0 && 
+        pauk_ui->history[pauk_ui->history_count - 1] && 
+        strcmp(pauk_ui->history[pauk_ui->history_count - 1], url) == 0) {
+        printf("⏭️ Duplicate URL, not adding to history: %s\n", url);
+        return;
+    }
+    // ===================================================
+    
+    // Ako smo u sredini istorije (posle Back), odseci budućnost
+    if (pauk_ui->history_current < pauk_ui->history_count - 1) {
+        // Izbriši sve posle trenutne pozicije
+        for (int i = pauk_ui->history_current + 1; i < pauk_ui->history_count; i++) {
+            if (pauk_ui->history[i]) {
+                free(pauk_ui->history[i]);
+                pauk_ui->history[i] = NULL;
+            }
+        }
+        pauk_ui->history_count = pauk_ui->history_current + 1;
+    }
+    
+    if (pauk_ui->history_count >= pauk_ui->history_size) {
+        // Remove oldest entry if history is full
+        if (pauk_ui->history[0]) {
+            free(pauk_ui->history[0]);
+        }
+        for (int i = 1; i < pauk_ui->history_size; i++) {
+            pauk_ui->history[i - 1] = pauk_ui->history[i];
+        }
+        pauk_ui->history_count--;
+        pauk_ui->history_current--;
+    }
+    
+    pauk_ui->history_current = pauk_ui->history_count;
+    pauk_ui->history[pauk_ui->history_count] = strdup(url);
+    pauk_ui->history_count++;
+    
+    printf("📜 History: %d entries, current: %d\n", 
+           pauk_ui->history_count, pauk_ui->history_current);
 }
 
-free(bitmap);
+void build_search_url(const char *engine, const char *query, char *url_buffer, size_t buffer_size)
+{
+    if (!engine || !query || !url_buffer) return;
+    
+    // URL encode the query (simple version - replace spaces with +)
+    char encoded_query[256];
+    size_t j = 0;
+    for (size_t i = 0; query[i] != '\0' && j < sizeof(encoded_query) - 1; i++) {
+        if (query[i] == ' ') {
+            encoded_query[j++] = '+';
+        } else if (query[i] == '&') {
+            encoded_query[j++] = '%';
+            encoded_query[j++] = '2';
+            encoded_query[j++] = '6';
+        } else if (query[i] == '=') {
+            encoded_query[j++] = '%';
+            encoded_query[j++] = '3';
+            encoded_query[j++] = 'D';
+        } else if (query[i] == '?') {
+            encoded_query[j++] = '%';
+            encoded_query[j++] = '3';
+            encoded_query[j++] = 'F';
+        } else {
+            encoded_query[j++] = query[i];
+        }
+    }
+    encoded_query[j] = '\0';
+    
+    // Build URL based on search engine
+    if (str_casecmp(engine, "google") == 0) {
+        snprintf(url_buffer, buffer_size, "https://www.google.com/search?q=%s", encoded_query);
+    } else if (str_casecmp(engine, "yahoo") == 0) {
+        snprintf(url_buffer, buffer_size, "https://search.yahoo.com/search?p=%s", encoded_query);
+    } else if (str_casecmp(engine, "bing") == 0) {
+        snprintf(url_buffer, buffer_size, "https://www.bing.com/search?q=%s", encoded_query);
+    } else if (str_casecmp(engine, "duckduckgo") == 0) {
+        snprintf(url_buffer, buffer_size, "https://duckduckgo.com/?q=%s", encoded_query);
+    } else if (str_casecmp(engine, "yandex") == 0) {
+        snprintf(url_buffer, buffer_size, "https://yandex.com/search/?text=%s", encoded_query);
+    } else {
+        // Default to Google
+        snprintf(url_buffer, buffer_size, "https://www.google.com/search?q=%s", encoded_query);
+    }
+    
+    printf("Search URL: %s\n", url_buffer);
 }
 
-// Kerning with next character
-int next = *(p + 1);
-int kern = stbtt_GetCodepointKernAdvance(info, code_point, next);
-
-pen_x += (int)roundf((advance + kern) * scale);
-p++;
+void search_button_clicked(ui_pbutton_t *pbutton, void *arg)
+{
+    pauk_ui_t *pauk_ui = (pauk_ui_t *)arg;
+    const char *search_text = ui_entry_get_text(pauk_ui->search_entry);
+    
+    if (!search_text || str_length(search_text) == 0) {
+        ui_label_set_text(pauk_ui->status_label, "Enter search terms first");
+        ui_label_paint(pauk_ui->status_label);
+        return;
+    }
+    
+    printf("Searching for: %s using engine: %s\n", search_text, pauk_ui->current_search_engine);
+    ui_label_set_text(pauk_ui->status_label, "Searching...");
+    ui_label_paint(pauk_ui->status_label);
+    
+    // Build search URL using selected engine
+    char search_url[512];
+    build_search_url(pauk_ui->current_search_engine, search_text, search_url, sizeof(search_url));
+    
+    // Set the search URL in address bar and navigate to it
+    ui_entry_set_text(pauk_ui->address_entry, search_url);
+    
+    // Trigger navigation after a short delay to ensure UI updates
+    fibril_usleep(100000); // 100ms delay
+    
+    // Use the existing Go button functionality
+    go_button_clicked(pauk_ui->go_button, pauk_ui);
 }
-printf("[TTF] PRED CRTANJE\n");
-// Refresh the display
-gfx_bitmap_render(renderer->content_bitmap, &pauk_ui->list_rect, NULL);
-gfx_update(pauk_ui->gc);
-printf("[TTF] ZAVRSIO\n");
-} 
+
