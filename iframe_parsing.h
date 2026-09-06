@@ -7,5 +7,4 @@
 
 
 void calculate_iframe_dimensions(cJSON *iframe_json);
-
 #endif // IFRAME_PARSER_H
