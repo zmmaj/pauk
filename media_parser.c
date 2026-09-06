@@ -132,6 +132,7 @@ void calculate_media_dimensions(cJSON *media_json) {
         cJSON_AddNumberToObject(media_json, "placeholder_height", height);
         cJSON_AddStringToObject(media_json, "display", "inline-block");
     }
+
     
     // ========== ADDED: Border for visual separation ==========
     if (!cJSON_GetObjectItem(media_json, "border")) {
