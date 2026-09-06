@@ -8,6 +8,7 @@
 // ========== MAIN PUBLIC API ==========
 cJSON* parse_link_element_complete(lxb_dom_element_t *link_elem, cJSON *base_json);
 
+
 // ========== INDIVIDUAL ATTRIBUTE PARSERS ==========
 void parse_link_target_attribute(lxb_dom_element_t *elem, cJSON *link_json);
 void parse_link_rel_attribute(lxb_dom_element_t *elem, cJSON *link_json);
