@@ -1,5 +1,4 @@
 
-
 #include "headings_parser.h"
 #include <string.h>
 #include <ctype.h>
