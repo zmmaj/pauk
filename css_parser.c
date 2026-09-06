@@ -4,7 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include "main.h"
+#include "network.h"
 #include "cjson.h"
+#include "layout_engine.h"
+#include "pauk_tls.h"
 #include "js_executor_quickjs.h"
 #include <lexbor/css/css.h>
 #include <lexbor/css/selectors/selectors.h>
@@ -64,6 +68,28 @@ const char* get_css_unit_type_name(uintptr_t unit_id) {
         return "duration";
     }
     return "unknown";
+}
+
+static int selector_matches_element(const char *selector, lxb_dom_element_t *element) {
+    if (!selector || !element) return 0;
+
+    size_t len;
+    // 1. ID Selector (#id)
+    if (selector[0] == '#') {
+        const lxb_char_t *id = lxb_dom_element_id(element, &len);
+        return (id && strcmp(selector + 1, (char*)id) == 0);
+    }
+    
+    // 2. Class Selector (.class)
+    if (selector[0] == '.') {
+        const lxb_char_t *cls = lxb_dom_element_class(element, &len);
+        // Simple implementation: check if the class exists in the class string
+        return (cls && strstr((char*)cls, selector + 1) != NULL);
+    }
+    
+    // 3. Tag Selector (div, p, h1)
+    const lxb_char_t *tag = lxb_dom_element_qualified_name(element, &len);
+    return (tag && strcasecmp(selector, (char*)tag) == 0);
 }
 
 // Parse CSS value with proper unit detection
@@ -244,7 +270,7 @@ cJSON* get_all_css_units_json(void) {
 
 // CSS parser initialization based on Lexbor example
 int css_parser_init(void) {
-    printf("CSS PARSER: Initializing (Lexbor example style)...\n");
+  //  printf("CSS PARSER: Initializing (Lexbor example style)...\n");
     
     if (css_parser != NULL) {
         return 1;
@@ -344,58 +370,84 @@ cJSON* parse_inline_styles(const char *style_str, void *css_proc) {
                     }
                 }
                 
-                // Parse the value with unit detection
-                cJSON *parsed_value = parse_css_value_with_unit(value);
-                
-                if (parsed_value) {
-                    // Add to styles object with detailed parsing
-                    cJSON_AddItemToObject(styles, prop, parsed_value);
+                // ========== HANDLE SHORTHAND PROPERTIES ==========
+                if (strcmp(prop, "padding") == 0 || strcmp(prop, "margin") == 0) {
+                    // Handle multi-value padding/margin
+                    char *copy_val = strdup(value);
+                    if (copy_val) {
+                        char *parts[4];
+                        int part_count = 0;
+                        char *token = strtok(copy_val, " ");
+                        while (token && part_count < 4) {
+                            parts[part_count++] = token;
+                            token = strtok(NULL, " ");
+                        }
+                        
+                        int top, right, bottom, left;
+                        
+                        if (part_count == 1) {
+                            top = right = bottom = left = parse_css_length(parts[0], 0);
+                        } else if (part_count == 2) {
+                            top = bottom = parse_css_length(parts[0], 0);
+                            right = left = parse_css_length(parts[1], 0);
+                        } else if (part_count == 3) {
+                            top = parse_css_length(parts[0], 0);
+                            right = left = parse_css_length(parts[1], 0);
+                            bottom = parse_css_length(parts[2], 0);
+                        } else if (part_count >= 4) {
+                            top = parse_css_length(parts[0], 0);
+                            right = parse_css_length(parts[1], 0);
+                            bottom = parse_css_length(parts[2], 0);
+                            left = parse_css_length(parts[3], 0);
+                        } else {
+                            top = right = bottom = left = 0;
+                        }
+                        
+                        free(copy_val);
+                        
+                        // Store individual properties with !important flag
+                        char prop_top[64], prop_right[64], prop_bottom[64], prop_left[64];
+                        snprintf(prop_top, sizeof(prop_top), "%s-top", prop);
+                        snprintf(prop_right, sizeof(prop_right), "%s-right", prop);
+                        snprintf(prop_bottom, sizeof(prop_bottom), "%s-bottom", prop);
+                        snprintf(prop_left, sizeof(prop_left), "%s-left", prop);
+                        
+                        set_json_number(styles, prop_top, top);
+                        set_json_number(styles, prop_right, right);
+                        set_json_number(styles, prop_bottom, bottom);
+                        set_json_number(styles, prop_left, left);
+                        
+                        // Store !important flag for each property
+                        if (is_important) {
+                            char important_key[64];
+                            snprintf(important_key, sizeof(important_key), "%s-top_important", prop);
+                            set_json_bool(styles, important_key, 1);
+                            
+                            snprintf(important_key, sizeof(important_key), "%s-right_important", prop);
+                            set_json_bool(styles, important_key, 1);
+                            
+                            snprintf(important_key, sizeof(important_key), "%s-bottom_important", prop);
+                            set_json_bool(styles, important_key, 1);
+                            
+                            snprintf(important_key, sizeof(important_key), "%s-left_important", prop);
+                            set_json_bool(styles, important_key, 1);
+                        }
+                        
+                        count++;
+                    }
+                }
+                // ========== END SHORTHAND HANDLING ==========
+                else {
+                    // Normal property - store value and !important flag
+                    set_json_string(styles, prop, value);
                     
-                    // Create a detailed object for this property
-                    cJSON *prop_details = cJSON_CreateObject();
-                    if (prop_details) {
-                        // Store the original value
-                        cJSON_AddStringToObject(prop_details, "original", value);
-                        
-                        // Add important flag
-                        cJSON_AddBoolToObject(prop_details, "important", is_important);
-                        
-                        // Add parsed details
-                        cJSON *numeric = cJSON_GetObjectItem(parsed_value, "numeric");
-                        if (numeric) {
-                            cJSON_AddNumberToObject(prop_details, "numeric", 
-                                                   numeric->valuedouble);
-                        }
-                        
-                        cJSON *unit = cJSON_GetObjectItem(parsed_value, "unit");
-                        if (unit) {
-                            cJSON_AddStringToObject(prop_details, "unit", 
-                                                   unit->valuestring);
-                        }
-                        
-                        // Add to styles with _details suffix
-                        char details_key[256];
-                        snprintf(details_key, sizeof(details_key), 
-                                "%s_details", prop);
-                        cJSON_AddItemToObject(styles, details_key, prop_details);
+                    if (is_important) {
+                        char important_key[64];
+                        snprintf(important_key, sizeof(important_key), "%s_important", prop);
+                        set_json_bool(styles, important_key, 1);
                     }
                     
                     count++;
-                } else {
-                    // Fallback: just add as string if parsing fails
-                    cJSON_AddStringToObject(styles, prop, value);
-                    
-                    // Still create details object for important flag
-                    cJSON *prop_details = cJSON_CreateObject();
-                    if (prop_details) {
-                        cJSON_AddStringToObject(prop_details, "original", value);
-                        cJSON_AddBoolToObject(prop_details, "important", is_important);
-                        
-                        char details_key[256];
-                        snprintf(details_key, sizeof(details_key), 
-                                "%s_details", prop);
-                        cJSON_AddItemToObject(styles, details_key, prop_details);
-                    }
                 }
             }
         }
@@ -405,7 +457,7 @@ cJSON* parse_inline_styles(const char *style_str, void *css_proc) {
     free(copy);
     
     if (count > 0) {
-        cJSON_AddNumberToObject(styles, "property_count", count);
+        set_json_number(styles, "property_count", count);
         return styles;
     } else {
         cJSON_Delete(styles);
@@ -453,7 +505,7 @@ cJSON* parse_stylesheet_lxb(const lxb_char_t *css_text, size_t css_len)
         return NULL;
     }
 
-    printf("Parsing stylesheet (%zu bytes)...\n", css_len);
+  //  printf("Parsing stylesheet (%zu bytes)...\n", css_len);
 
     lxb_css_parser_clean(css_parser);
     lxb_css_stylesheet_t *stylesheet =
@@ -500,7 +552,7 @@ cJSON* parse_stylesheet_lxb(const lxb_char_t *css_text, size_t css_len)
     if (rule_count > 0) {
         cJSON_AddItemToObject(result, "rules", rules_array);
         cJSON_AddNumberToObject(result, "rule_count", rule_count);
-        printf("Successfully parsed %d CSS rules\n", rule_count);
+      //  printf("Successfully parsed %d CSS rules\n", rule_count);
     } else {
         cJSON_Delete(rules_array);
         printf("No CSS rules found in stylesheet\n");
@@ -543,7 +595,7 @@ void extract_and_parse_stylesheets(lxb_html_document_t *doc, cJSON *output_json)
                                 style_collection, (lxb_char_t*)"style", 5);
     
     size_t count = lxb_dom_collection_length(style_collection);
-    printf("Found %zu style elements\n", count);
+ //  printf("Found %zu style elements\n", count);
     
     if (count > 0) {
         cJSON *stylesheets = cJSON_CreateArray();
@@ -597,7 +649,7 @@ int parse_and_apply_document_styles(lxb_html_document_t *doc) {
                                 style_collection, (lxb_char_t*)"style", 5);
     
     size_t style_count = lxb_dom_collection_length(style_collection);
-    printf("Found %zu style elements in document\n", style_count);
+   // printf("Found %zu style elements in document\n", style_count);
     
     // For now, just extract CSS text - not applying it yet
     for (size_t i = 0; i < style_count; i++) {
@@ -608,14 +660,14 @@ int parse_and_apply_document_styles(lxb_html_document_t *doc) {
         lxb_char_t *css_text = lxb_dom_node_text_content(style_node, &css_len);
         
         if (css_text && css_len > 0) {
-            printf("Style block %zu: %zu bytes\n", i, css_len);
+        //    printf("Style block %zu: %zu bytes\n", i, css_len);
             
             // Parse the stylesheet
             lxb_css_stylesheet_t *stylesheet = 
                 lxb_css_stylesheet_parse(css_parser, css_text, css_len);
             
             if (stylesheet) {
-                printf("Successfully parsed stylesheet with %p\n", (void*)stylesheet);
+              //  printf("Successfully parsed stylesheet with %p\n", (void*)stylesheet);
                 // Could process rules here later
                 lxb_css_stylesheet_destroy(stylesheet, true);
             }
@@ -656,49 +708,36 @@ char* clean_css_text(const char *css) {
 }
 
 
-// css_parser.c - Add these functions
 
 // Apply styles from stylesheet to elements
-static void apply_stylesheet_to_element(cJSON *stylesheet_json, 
-    lxb_dom_element_t *element,
-    cJSON *element_styles) {
-if (!stylesheet_json || !element || !element_styles) return;
+static void apply_stylesheet_to_element(cJSON *stylesheet_json, lxb_dom_element_t *element, cJSON *element_styles) {
+    cJSON *rules = cJSON_GetObjectItem(stylesheet_json, "rules");
+    if (!rules) return;
 
-cJSON *rules = cJSON_GetObjectItem(stylesheet_json, "rules");
-if (!rules || !cJSON_IsArray(rules)) return;
+    cJSON *rule;
+    cJSON_ArrayForEach(rule, rules) {
+        cJSON *selectors = cJSON_GetObjectItem(rule, "selectors");
+        cJSON *selector;
+        bool is_match = false;
 
-// Get element selector info
-size_t len;
-const lxb_char_t *tag = lxb_dom_element_qualified_name(element, &len);
-char *tag_str = NULL;
-if (tag && len > 0) {
-tag_str = malloc(len + 1);
-memcpy(tag_str, tag, len);
-tag_str[len] = '\0';
-}
+        cJSON_ArrayForEach(selector, selectors) {
+            if (selector_matches_element(selector->valuestring, element)) {
+                is_match = true;
+                break;
+            }
+        }
 
-const lxb_char_t *id = lxb_dom_element_id(element, &len);
-char *id_str = NULL;
-if (id && len > 0) {
-id_str = malloc(len + 1);
-memcpy(id_str, id, len);
-id_str[len] = '\0';
-}
-
-const lxb_char_t *cls = lxb_dom_element_class(element, &len);
-char *class_str = NULL;
-if (cls && len > 0) {
-class_str = malloc(len + 1);
-memcpy(class_str, cls, len);
-class_str[len] = '\0';
-}
-
-// TODO: Implement CSS selector matching
-// For now, we'll just parse and store all rules
-
-if (tag_str) free(tag_str);
-if (id_str) free(id_str);
-if (class_str) free(class_str);
+        if (is_match) {
+            cJSON *declarations = cJSON_GetObjectItem(rule, "declarations");
+            cJSON *decl;
+            cJSON_ArrayForEach(decl, declarations) {
+                const char *prop = cJSON_GetObjectItem(decl, "property")->valuestring;
+                const char *val = cJSON_GetObjectItem(decl, "value")->valuestring;
+                // Use ReplaceItem to ensure the latest rule (or higher specificity) wins
+                cJSON_ReplaceItemInObject(element_styles, prop, cJSON_CreateString(val));
+            }
+        }
+    }
 }
 
 /*
@@ -907,16 +946,36 @@ void parse_style_rule_complete(lxb_css_rule_style_t *style_rule, cJSON *rule_jso
         int sel_count = 0;
         
         while (selector) {
+            // ===== DODATAK ZA :root i :host SELEKTORE =====
+            char *selector_text = NULL;
+            
+            // Pokušaj sa serijalizacijom
             lexbor_str_t sel_str = {0};
             if (lxb_css_selector_serialize(selector, my_serialize_cb, &sel_str) == LXB_STATUS_OK && 
-                sel_str.data != NULL) {
+                sel_str.data != NULL && sel_str.length > 0) {
                 
-                char *selector_text = strdup((char *)sel_str.data);
+                // Ako je selektor prazan ili sadrži samo ":" ili ":root" ili ":host", zameni ga
+                if (sel_str.length == 1 && sel_str.data[0] == ':') {
+                    selector_text = strdup("html");
+                    if (INFO_MESSAGES) printf("🔧 [CSS] Zamenjen prazan pseudo-selektor sa html\n");
+                } else if (strcmp((char *)sel_str.data, ":root") == 0) {
+                    selector_text = strdup("html");
+                    if (INFO_MESSAGES) printf("🔧 [CSS] Zamenjen :root sa html\n");
+                } else if (strcmp((char *)sel_str.data, ":host") == 0) {
+                    selector_text = strdup("body");
+                    if (INFO_MESSAGES) printf("🔧 [CSS] Zamenjen :host sa body\n");
+                } else {
+                    selector_text = strdup((char *)sel_str.data);
+                }
+                lexbor_free(sel_str.data);
+            }
+            
+            if (selector_text) {
                 cJSON_AddItemToArray(selectors_array, cJSON_CreateString(selector_text));
                 free(selector_text);
-                lexbor_free(sel_str.data);
                 sel_count++;
             }
+            
             selector = selector->next;
         }
         
@@ -928,7 +987,7 @@ void parse_style_rule_complete(lxb_css_rule_style_t *style_rule, cJSON *rule_jso
         }
     }
     
-    // Parse DECLARATIONS
+    // Parse DECLARATIONS (ostaje isto)
     if (style_rule->declarations) {
         cJSON *declarations_array = cJSON_CreateArray();
         lxb_css_rule_declaration_list_t *decl_list = style_rule->declarations;
@@ -1054,5 +1113,235 @@ void parse_at_rule_complete(lxb_css_rule_at_t *at_rule, cJSON *rule_json) {
     }
 }
 
+//u utf8 konverzija
+void utf8_to_ascii(char *s)
+{
+    unsigned char *r = (unsigned char *)s;
+    unsigned char *w = (unsigned char *)s;
+
+    while (*r) {
+        long code = 0;
+
+        // ======================================================
+        // Special case: &amp;#160; should become &#160; literally
+        // ======================================================
+        if (strncmp((char*)r, "&amp;#", 6) == 0) {
+            *w++ = '&';
+            r += 5; // consume only "&amp;"
+            continue;
+        }
+
+        // ===== Handle named entities =====
+        if (strncmp((char*)r, "&amp;#", 6) == 0) { *w++ = '&'; *w++ = '#'; r += 6; continue;}
+        if (strncmp((char*)r, "&lt;", 4) == 0)   { *w++='<'; r+=4; continue; }
+        if (strncmp((char*)r, "&gt;", 4) == 0)   { *w++='>'; r+=4; continue; }
+        if (strncmp((char*)r, "&quot;", 6) == 0) { *w++='"'; r+=6; continue; }
+        if (strncmp((char*)r, "&apos;", 6) == 0) { *w++='\''; r+=6; continue; }
+
+        if (strncmp((char*)r, "&nbsp;", 6) == 0) { *w++=' '; r+=6; continue; }
+        if (strncmp((char*)r, "&copy;", 6) == 0) { *w++=(unsigned char)0xA9; r+=6; continue; }
+        if (strncmp((char*)r, "&euro;", 6) == 0) { *w++=(unsigned char)0x80; r+=6; continue; }
+
+        // ===== Handle numeric entities =====
+        if (r[0]=='&' && r[1]=='#') {
+            unsigned char *end = r+2;
+            unsigned char *num_start = end;
+            int is_hex = 0;
+
+            if ((*end=='x'||*end=='X') && isxdigit(end[1])) {
+                is_hex = 1;
+                end++;
+                num_start = end;
+            }
+
+            if (is_hex) {
+                while (isxdigit(*end)) {
+                    char c=*end;
+                    if (c>='0' && c<='9') code=code*16+(c-'0');
+                    else if (c>='a' && c<='f') code=code*16+(c-'a'+10);
+                    else if (c>='A' && c<='F') code=code*16+(c-'A'+10);
+                    end++;
+                }
+            } else {
+                while (isdigit(*end)) {
+                    code=code*10+(*end-'0');
+                    end++;
+                }
+            }
+
+            if (end > num_start && *end == ';') {
+
+                if (code == 160) { *w++ = '&'; *w++ = '#'; *w++ = '1'; *w++ = '6'; *w++ = '0'; *w++ = ';';}
+                else if (code == 169) *w++ = (unsigned char)0xA9;     // ©
+                else if (code == 8364) *w++ = (unsigned char)0x80;    // €
+                else if (code < 256) *w++ = (unsigned char)code;
+                else *w++ = '?';
+
+                r = end + 1;
+                continue;
+            }
+        }
+
+        // ===== UTF-8 handling =====
+
+        // © U+00A9 = C2 A9
+        if (r[0]==0xC2 && r[1]==0xA9) {
+            *w++ = (unsigned char)0xA9;
+            r += 2;
+            continue;
+        }
+
+        // € U+20AC = E2 82 AC
+        if (r[0]==0xE2 && r[1]==0x82 && r[2]==0xAC) {
+            *w++ = (unsigned char)0x80;
+            r += 3;
+            continue;
+        }
+
+        // Generic Latin-1 range C2 xx
+        if (r[0]==0xC2 && r[1]) {
+            *w++ = r[1];
+            r += 2;
+            continue;
+        }
+
+        // Generic Latin-1 range C3 xx
+        if (r[0]==0xC3 && r[1]) {
+            *w++ = r[1] + 0x40;
+            r += 2;
+            continue;
+        }
+
+        // Otherwise copy byte
+        *w++ = *r++;
+    }
+
+    *w = '\0';
+}
 
 
+void add_default_css_rules(void) {
+    printf("=== Adding default CSS rules ===\n");
+        // Default margins for block elements (as specified by HTML standards)
+        add_css_rule("p", "margin-top", "1em");
+        add_css_rule("p", "margin-bottom", "1em");
+        add_css_rule("h1", "margin-top", "0.67em");
+        add_css_rule("h1", "margin-bottom", "0.67em");
+        add_css_rule("h2", "margin-top", "0.83em");
+        add_css_rule("h2", "margin-bottom", "0.83em");
+        add_css_rule("h3", "margin-top", "1em");
+        add_css_rule("h3", "margin-bottom", "1em");
+        add_css_rule("div", "margin-top", "0");
+        add_css_rule("div", "margin-bottom", "0");
+        add_css_rule("ul", "margin-top", "1em");
+        add_css_rule("ul", "margin-bottom", "1em");
+        add_css_rule("li", "margin-top", "0");
+        add_css_rule("li", "margin-bottom", "0");
+        
+    add_css_rule("body", "max-width", "100%");
+    add_css_rule("body", "overflow-x", "hidden");
+    add_css_rule("p", "word-wrap", "break-word");
+    add_css_rule("p", "white-space", "normal");
+    add_css_rule("div", "word-wrap", "break-word");
+    add_css_rule("div", "white-space", "normal");
+    add_css_rule("span", "word-wrap", "break-word");
+    add_css_rule("span", "white-space", "normal");
+    add_css_rule("article", "word-wrap", "break-word");
+    add_css_rule("article", "white-space", "normal");
+    add_css_rule("section", "word-wrap", "break-word");
+    add_css_rule("section", "white-space", "normal");
+    add_css_rule("html", "max-width", "100%");
+    add_css_rule("html", "overflow-x", "hidden");
+    
+
+}
+
+
+void fetch_and_parse_external_css(const char *css_url, const char *base_url) {
+  //  printf("📁 fetch_and_parse_external_css: url='%s', base='%s'\n", css_url, base_url);
+    
+    // Resolve relative URL
+    char *absolute_url = resolve_relative_url(base_url, css_url);
+    if (!absolute_url) {
+        printf("❌ Failed to resolve URL\n");
+        return;
+    }
+    
+ //   printf("   Absolute URL: %s\n", absolute_url);
+    
+    // Fetch the CSS
+    char *css_content = NULL;
+    size_t css_size = 0;
+    
+    if (fetch_css_resource(absolute_url, &css_content, &css_size) == EOK) {
+    //    printf("✅ Fetched CSS (%zu bytes)\n", css_size);
+        parse_css_and_add_rules(css_content);
+        free(css_content);
+    } else {
+        printf("❌ Failed to fetch CSS from %s\n", absolute_url);
+    }
+    
+    free(absolute_url);
+}
+
+
+// Parse CSS from a string and add rules to the global css_rules array
+void parse_css_string(const char *css_content, const char *source_url) {
+    if (!css_content || strlen(css_content) == 0) return;
+    
+    // Use your existing parse_stylesheet_lxb function
+    cJSON *stylesheet = parse_stylesheet_lxb((lxb_char_t*)css_content, strlen(css_content));
+    
+    if (!stylesheet) {
+        printf("❌ Failed to parse CSS from %s\n", source_url ? source_url : "unknown");
+        return;
+    }
+    
+    cJSON *rules = cJSON_GetObjectItem(stylesheet, "rules");
+    if (rules && cJSON_IsArray(rules)) {
+
+        
+        for (int r = 0; r < cJSON_GetArraySize(rules); r++) {
+            cJSON *rule = cJSON_GetArrayItem(rules, r);
+            cJSON *selectors = cJSON_GetObjectItem(rule, "selectors");
+            cJSON *declarations = cJSON_GetObjectItem(rule, "declarations");
+            
+            if (selectors && declarations && 
+                cJSON_IsArray(selectors) && cJSON_IsArray(declarations)) {
+                
+                // Reconstruct selector string
+                char full_selector[512] = "";
+                for (int s = 0; s < cJSON_GetArraySize(selectors); s++) {
+                    cJSON *sel = cJSON_GetArrayItem(selectors, s);
+                    if (cJSON_IsString(sel)) {
+                        if (s > 0 && sel->valuestring[0] != ':') {
+                            strcat(full_selector, " ");
+                        }
+                        strcat(full_selector, sel->valuestring);
+                    }
+                }
+                
+                // Add each declaration to global CSS rules
+                for (int d = 0; d < cJSON_GetArraySize(declarations); d++) {
+                    cJSON *decl = cJSON_GetArrayItem(declarations, d);
+                    cJSON *prop = cJSON_GetObjectItem(decl, "property");
+                    cJSON *val = cJSON_GetObjectItem(decl, "value");
+                    
+                    if (prop && val && cJSON_IsString(prop) && cJSON_IsString(val)) {
+                        // Clean value (remove !important etc)
+                        char clean_value[256];
+                        strncpy(clean_value, val->valuestring, sizeof(clean_value) - 1);
+                        clean_value[sizeof(clean_value) - 1] = '\0';
+                        
+                        char *important = strstr(clean_value, " !important");
+                        if (important) *important = '\0';
+                        
+                        add_css_rule(full_selector, prop->valuestring, clean_value);
+                    }
+                }
+            }
+        }
+    }
+    
+    cJSON_Delete(stylesheet);
+}
