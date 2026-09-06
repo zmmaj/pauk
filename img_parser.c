@@ -1,5 +1,6 @@
 #include "img_parser.h"
 #include "main.h"
+#include "layout_engine.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -95,127 +96,39 @@ cJSON* parse_srcset(const char *srcset_str) {
     }
 }
 
+
 void calculate_image_dimensions(cJSON *image_json) {
     if (!image_json) return;
-    
-    // Check if already calculated
-    cJSON *calc_width = cJSON_GetObjectItem(image_json, "calculated_width");
-    cJSON *calc_height = cJSON_GetObjectItem(image_json, "calculated_height");
-    
-    if (calc_width && calc_height) {
-        return; // Already calculated
-    }
     
     int width = 0;
     int height = 0;
     
-    // Try to get width/height from attributes first
+    // Get pre-converted pixel values from attributes
     cJSON *attr_width = cJSON_GetObjectItem(image_json, "attr_width");
     cJSON *attr_height = cJSON_GetObjectItem(image_json, "attr_height");
     
-    // Also check CSS width/height if available
-    cJSON *css_width = cJSON_GetObjectItem(image_json, "width");
-    cJSON *css_height = cJSON_GetObjectItem(image_json, "height");
-    
-    // Parse width
-    if (attr_width) {
-        if (cJSON_IsString(attr_width)) {
-            char *width_str = attr_width->valuestring;
-            char *endptr;
-            double w = strtod(width_str, &endptr);
-            if (endptr != width_str) {
-                width = (int)w;
-                cJSON_AddStringToObject(image_json, "width_unit", "pixels");
-            } else if (strstr(width_str, "%")) {
-                // Percentage - use default pixel value
-                width = 400;
-                cJSON_AddStringToObject(image_json, "width_unit", "percentage");
-            }
-        } else if (cJSON_IsNumber(attr_width)) {
-            width = attr_width->valueint;
-            cJSON_AddStringToObject(image_json, "width_unit", "pixels");
-        }
-    } else if (css_width && cJSON_IsString(css_width)) {
-        // Try CSS width
-        char *width_str = css_width->valuestring;
-        if (strstr(width_str, "px")) {
-            char *endptr;
-            double w = strtod(width_str, &endptr);
-            if (endptr != width_str) {
-                width = (int)w;
-                cJSON_AddStringToObject(image_json, "width_unit", "pixels");
-            }
-        } else if (strstr(width_str, "%")) {
-            // Percentage - use default
-            width = 400;
-            cJSON_AddStringToObject(image_json, "width_unit", "percentage");
-        } else if (strstr(width_str, "auto")) {
-            width = 400; // Default for auto
-            cJSON_AddStringToObject(image_json, "width_unit", "auto");
-        }
+    if (attr_width && cJSON_IsNumber(attr_width)) {
+        width = attr_width->valueint;
     }
     
-    // Parse height
-    if (attr_height) {
-        if (cJSON_IsString(attr_height)) {
-            char *height_str = attr_height->valuestring;
-            char *endptr;
-            double h = strtod(height_str, &endptr);
-            if (endptr != height_str) {
-                height = (int)h;
-                cJSON_AddStringToObject(image_json, "height_unit", "pixels");
-            } else if (strstr(height_str, "%")) {
-                // Percentage - use default pixel value
-                height = 300;
-                cJSON_AddStringToObject(image_json, "height_unit", "percentage");
-            }
-        } else if (cJSON_IsNumber(attr_height)) {
-            height = attr_height->valueint;
-            cJSON_AddStringToObject(image_json, "height_unit", "pixels");
-        }
-    } else if (css_height && cJSON_IsString(css_height)) {
-        // Try CSS height
-        char *height_str = css_height->valuestring;
-        if (strstr(height_str, "px")) {
-            char *endptr;
-            double h = strtod(height_str, &endptr);
-            if (endptr != height_str) {
-                height = (int)h;
-                cJSON_AddStringToObject(image_json, "height_unit", "pixels");
-            }
-        } else if (strstr(height_str, "%")) {
-            // Percentage - use default
-            height = 300;
-            cJSON_AddStringToObject(image_json, "height_unit", "percentage");
-        } else if (strstr(height_str, "auto")) {
-            height = 300; // Default for auto
-            cJSON_AddStringToObject(image_json, "height_unit", "auto");
-        }
+    if (attr_height && cJSON_IsNumber(attr_height)) {
+        height = attr_height->valueint;
     }
     
-    // ========== FIXED: Default dimensions if not specified ==========
+    // Default dimensions if not specified
     if (width <= 0) width = 400;
     if (height <= 0) height = 300;
     
-    // ========== FIXED: Store calculated dimensions CORRECTLY ==========
-    if (!calc_width) {
-        cJSON_AddNumberToObject(image_json, "calculated_width", width);
-    } else {
-        cJSON_SetNumberValue(calc_width, width);  // CORRECT: width
-    }
+    // Set main width/height fields directly
+    cJSON_ReplaceItemInObject(image_json, "width", cJSON_CreateNumber(width));
+    cJSON_ReplaceItemInObject(image_json, "height", cJSON_CreateNumber(height));
     
-    if (!calc_height) {
-        cJSON_AddNumberToObject(image_json, "calculated_height", height);
-    } else {
-        cJSON_SetNumberValue(calc_height, height);  // CORRECT: height
-    }
-    
-    // Calculate aspect ratio
-    if (height > 0) {
+    // Calculate aspect ratio (useful for maintaining proportions)
+ /*   if (height > 0) {
         double aspect_ratio = (double)width / (double)height;
         cJSON_AddNumberToObject(image_json, "aspect_ratio", aspect_ratio);
     }
-    
+  */  
     // ========== Add image-specific rendering properties ==========
     
     // Placeholder for broken images
@@ -235,17 +148,12 @@ void calculate_image_dimensions(cJSON *image_json) {
         cJSON_AddNumberToObject(image_json, "placeholder_height", height);
     }
     
-    // Default image border (for img tags without styling)
+    // Default image border
     if (!cJSON_GetObjectItem(image_json, "border")) {
         cJSON_AddStringToObject(image_json, "border", "none");
     }
     
-    // Image display mode
-    if (!cJSON_GetObjectItem(image_json, "display")) {
-        cJSON_AddStringToObject(image_json, "display", "inline-block");
-    }
-    
-    // Object-fit style (for responsive images)
+    // Object-fit style
     if (!cJSON_GetObjectItem(image_json, "object_fit")) {
         cJSON_AddStringToObject(image_json, "object_fit", "fill");
     }
@@ -257,7 +165,7 @@ void calculate_image_dimensions(cJSON *image_json) {
         if (parsed_srcset) {
             cJSON_AddItemToObject(image_json, "srcset_parsed", parsed_srcset);
             
-            // Find the largest width in srcset for default selection
+            // Find the largest width in srcset
             cJSON *largest_item = NULL;
             int largest_width = 0;
             
@@ -286,12 +194,81 @@ void calculate_image_dimensions(cJSON *image_json) {
     // ========== Handle loading attribute ==========
     cJSON *loading = cJSON_GetObjectItem(image_json, "loading");
     if (!loading || !cJSON_IsString(loading)) {
-        cJSON_AddStringToObject(image_json, "loading", "eager"); // HTML default
+        cJSON_AddStringToObject(image_json, "loading", "eager");
     }
     
     // ========== Handle decoding attribute ==========
     cJSON *decoding = cJSON_GetObjectItem(image_json, "decoding");
     if (!decoding || !cJSON_IsString(decoding)) {
-        cJSON_AddStringToObject(image_json, "decoding", "auto"); // HTML default
+        cJSON_AddStringToObject(image_json, "decoding", "auto");
     }
+}
+
+// Function to detect if buffer contains binary image data
+int is_binary_image_data(const unsigned char *buffer, size_t size) {
+    if (size < 8) return 0;
+    
+    // Check magic bytes for common image formats
+    // PNG: 89 50 4E 47 0D 0A 1A 0A
+    if (buffer[0] == 0x89 && buffer[1] == 'P' && buffer[2] == 'N' && buffer[3] == 'G') {
+        printf("🔍 Detected PNG format\n");
+        return 1;
+    }
+    
+    // JPEG: FF D8 FF
+    if (buffer[0] == 0xFF && buffer[1] == 0xD8 && buffer[2] == 0xFF) {
+        printf("🔍 Detected JPEG format\n");
+        return 1;
+    }
+    
+    // GIF: GIF87a or GIF89a
+    if ((buffer[0] == 'G' && buffer[1] == 'I' && buffer[2] == 'F') &&
+        (buffer[3] == '8' && (buffer[4] == '7' || buffer[4] == '9') && buffer[5] == 'a')) {
+        printf("🔍 Detected GIF format\n");
+        return 1;
+    }
+    
+    // WEBP: RIFF....WEBP
+    if (buffer[0] == 'R' && buffer[1] == 'I' && buffer[2] == 'F' && buffer[3] == 'F' &&
+        buffer[8] == 'W' && buffer[9] == 'E' && buffer[10] == 'B' && buffer[11] == 'P') {
+        printf("🔍 Detected WEBP format\n");
+        return 1;
+    }
+    
+    // BMP: BM
+    if (buffer[0] == 'B' && buffer[1] == 'M') {
+        printf("🔍 Detected BMP format\n");
+        return 1;
+    }
+    
+    return 0;
+}
+
+// Function to check if buffer is pure binary (not text/HTML)
+int is_binary_data(const unsigned char *buffer, size_t size) {
+    if (size == 0) return 0;
+    
+    // Check for common binary magic bytes first
+    if (is_binary_image_data(buffer, size)) return 1;
+    
+    // Heuristic: If first N bytes contain null bytes or high ASCII, it's binary
+    int null_count = 0;
+    int non_printable = 0;
+    size_t check_size = size < 256 ? size : 256;
+    
+    for (size_t i = 0; i < check_size; i++) {
+        if (buffer[i] == 0) null_count++;
+        if (buffer[i] < 32 && buffer[i] != '\n' && buffer[i] != '\r' && buffer[i] != '\t') {
+            non_printable++;
+        }
+    }
+    
+    // If many null bytes or non-printable chars, it's likely binary
+    if (null_count > 5 || non_printable > (int)check_size / 4) {
+        printf("🔍 Detected binary data (%d nulls, %d non-printable)\n", 
+               null_count, non_printable);
+        return 1;
+    }
+    
+    return 0;
 }
