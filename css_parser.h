@@ -59,6 +59,14 @@ void parse_style_rule_complete(lxb_css_rule_style_t *style_rule, cJSON *rule_jso
 void parse_at_rule_complete(lxb_css_rule_at_t *at_rule, cJSON *rule_json);
 void parse_media_rule_complete(lxb_css_at_rule_media_t *media_rule, cJSON *rule_json);
 
+//u utf8 konverzija
+void utf8_to_ascii(char *s);
+
+void add_default_css_rules(void) ;
+
+void fetch_and_parse_external_css(const char *url, const char *base_url);
+
+void parse_css_string(const char *css_content, const char *source_url);
 
 
 #ifdef __cplusplus
