@@ -13,7 +13,7 @@ static int menu_capacity = 0;
 
 
 // ===== ORIENTATION DETECTION =====
-static const char* detect_menu_orientation(lxb_dom_element_t *menu_elem) {
+const char* detect_menu_orientation(lxb_dom_element_t *menu_elem) {
     // Check CSS styles first
     lxb_dom_attr_t *style_attr = lxb_dom_element_attr_by_id(menu_elem, LXB_DOM_ATTR_STYLE);
     if (style_attr) {
@@ -127,7 +127,7 @@ static lxb_dom_element_t* find_link_in_item(lxb_dom_element_t *item_elem) {
     
     return NULL;
 }
-
+/*
 static void calculate_menu_dimensions(cJSON *menu_json) {
     if (!menu_json) return;
     
@@ -199,43 +199,74 @@ static void extract_list_as_menu(lxb_dom_element_t *list_elem, cJSON *items_arra
     }
 }
 
-static void extract_nav_content(lxb_dom_node_t *node, cJSON *items_array, int *item_index, int nesting_level) {
-    lxb_dom_node_t *child = lxb_dom_node_first_child(node);
-    
-    while (child) {
-        if (child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-            lxb_dom_element_t *child_elem = lxb_dom_interface_element(child);
-            size_t tag_len;
-            const lxb_char_t *tag_name = lxb_dom_element_qualified_name(child_elem, &tag_len);
-            
-            if (tag_name && tag_len > 0) {
-                char *tag = malloc(tag_len + 1);
-                memcpy(tag, tag_name, tag_len);
-                tag[tag_len] = '\0';
-                
-                // Check for common navigation structures
-                if (strcasecmp(tag, "ul") == 0 || strcasecmp(tag, "ol") == 0) {
-                    // Navigation list - extract its items
-                    extract_list_as_menu(child_elem, items_array, item_index, nesting_level);
-                }
-                else if (strcasecmp(tag, "a") == 0) {
-                    // Direct link in nav
-                    cJSON *item_json = extract_menu_item(child_elem, (*item_index)++, nesting_level);
-                    if (item_json) {
-                        cJSON_AddItemToArray(items_array, item_json);
-                    }
-                }
-                else if (strcasecmp(tag, "div") == 0 || strcasecmp(tag, "section") == 0) {
-                    // Container with nested content
-                    extract_nav_content(child, items_array, item_index, nesting_level);
-                }
-                
-                free(tag);
-            }
-        }
-        
-        child = lxb_dom_node_next(child);
-    }
+static void extract_nav_content(lxb_dom_node_t *node, cJSON *items_array, 
+    int *item_index, int nesting_level) {
+// Keep track of visited elements
+static lxb_dom_element_t *visited[100];
+static int visited_count = 0;
+int child_count = 0;
+lxb_dom_node_t *child = lxb_dom_node_first_child(node);
+
+while (child) {
+if (child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+lxb_dom_element_t *child_elem = lxb_dom_interface_element(child);
+
+// Check if already visited
+int already_visited = 0;
+for (int i = 0; i < visited_count; i++) {
+if (visited[i] == child_elem) {
+already_visited = 1;
+break;
+}
+}
+
+if (already_visited) {
+child = lxb_dom_node_next(child);
+continue;
+}
+
+// Mark as visited
+visited[visited_count++] = child_elem;
+
+size_t tag_len;
+const lxb_char_t *tag_name = lxb_dom_element_qualified_name(child_elem, &tag_len);
+
+if (tag_name && tag_len > 0) {
+char *tag = malloc(tag_len + 1);
+memcpy(tag, tag_name, tag_len);
+tag[tag_len] = '\0';
+
+printf("  child %d: <%s> at %p\n", child_count, tag, child_elem);
+
+if (strcasecmp(tag, "ul") == 0 || strcasecmp(tag, "ol") == 0) {
+// Only extract from top-level lists
+if (nesting_level == 0) {
+extract_list_as_menu(child_elem, items_array, item_index, nesting_level);
+} else {
+// For nested lists, still process but don't extract items
+extract_list_as_menu(child_elem, items_array, item_index, nesting_level + 1);
+}
+}
+else if (strcasecmp(tag, "a") == 0) {
+// Only add top-level links
+if (nesting_level == 0) {
+cJSON *item_json = extract_menu_item(child_elem, (*item_index)++, nesting_level);
+if (item_json) {
+cJSON_AddItemToArray(items_array, item_json);
+}
+}
+}
+else if (strcasecmp(tag, "div") == 0 || strcasecmp(tag, "section") == 0) {
+// Continue recursion at same nesting level
+extract_nav_content(child, items_array, item_index, nesting_level);
+}
+
+free(tag);
+}
+}
+
+child = lxb_dom_node_next(child);
+}
 }
 
 static void extract_menu_content(lxb_dom_node_t *node, cJSON *items_array, int *item_index, int nesting_level) {
@@ -256,7 +287,7 @@ static void extract_menu_content(lxb_dom_node_t *node, cJSON *items_array, int *
     }
 }
 
-
+*/
 
 // ===== GETTER FUNCTIONS =====
 int get_menu_count(void) {
@@ -278,7 +309,7 @@ const char* get_menu_type(int index) {
     return menus_to_extract[index].menu_type;
 }
 // ============================
-
+/*
 // ===== STYLE HELPER FUNCTIONS =====
 static void add_default_menu_styles(cJSON *styles, const char *menu_type) {
     if (!cJSON_GetObjectItem(styles, "display")) {
@@ -319,7 +350,7 @@ static cJSON* create_default_menu_styles(const char *menu_type) {
     
     return styles;
 }
-
+*/
 static void add_default_menu_item_styles(cJSON *styles, int nesting_level) {
     if (!cJSON_GetObjectItem(styles, "margin")) {
         if (nesting_level == 0) {
@@ -391,132 +422,155 @@ void store_menu_for_extraction(lxb_dom_element_t *menu_elem, const char *filenam
     printf("DEBUG: Stored menu %s as %s\n", full_type, filename);
 }
 
-cJSON* extract_menu_structure(lxb_dom_element_t *menu_elem) {
-    if (!menu_elem) return NULL;
-    
-    cJSON *menu_json = cJSON_CreateObject();
-    
-    // Determine menu type
-    size_t len;
-    const lxb_char_t *tag_name = lxb_dom_element_qualified_name(menu_elem, &len);
-    char *menu_type = NULL;
-    if (tag_name && len > 0) {
-        menu_type = malloc(len + 1);
-        memcpy(menu_type, tag_name, len);
-        menu_type[len] = '\0';
-        cJSON_AddStringToObject(menu_json, "menu_type", menu_type);
-    } else {
-        cJSON_AddStringToObject(menu_json, "menu_type", "nav"); // default
-    }
-    
-    const char *orientation = detect_menu_orientation(menu_elem);
-    cJSON_AddStringToObject(menu_json, "orientation", orientation);
+cJSON *extract_menu_fast(lxb_dom_element_t *nav_elem) {
+    if (!nav_elem) return NULL;
 
-    // Get menu attributes
-    const lxb_char_t *menu_id = lxb_dom_element_id(menu_elem, &len);
-    if (menu_id && len > 0) {
-        char *id_str = malloc(len + 1);
-        memcpy(id_str, menu_id, len);
-        id_str[len] = '\0';
-        cJSON_AddStringToObject(menu_json, "id", id_str);
-        free(id_str);
-    }
-    
-    const lxb_char_t *menu_class = lxb_dom_element_class(menu_elem, &len);
-    if (menu_class && len > 0) {
-        char *class_str = malloc(len + 1);
-        memcpy(class_str, menu_class, len);
-        class_str[len] = '\0';
-        cJSON_AddStringToObject(menu_json, "class", class_str);
-        free(class_str);
-    }
-    
-    // Get role attribute for accessibility
-    lxb_dom_attr_t *role_attr = lxb_dom_element_attr_by_name(
-        menu_elem, (lxb_char_t*)"role", 4);
-    if (role_attr) {
-        const lxb_char_t *role = lxb_dom_attr_value(role_attr, &len);
-        if (role && len > 0) {
-            char *role_str = malloc(len + 1);
-            memcpy(role_str, role, len);
-            role_str[len] = '\0';
-            cJSON_AddStringToObject(menu_json, "role", role_str);
-            free(role_str);
+    cJSON *menu = cJSON_CreateObject();
+    cJSON *items = cJSON_CreateArray();
+    cJSON_AddStringToObject(menu, "type", "menu");
+    cJSON_AddItemToObject(menu, "items", items);
+
+    lxb_dom_node_t *node = lxb_dom_interface_node(nav_elem)->first_child;
+
+    while (node) {
+        if (node->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+            lxb_dom_element_t *el = lxb_dom_interface_element(node);
+            const lxb_char_t *tag; size_t len;
+            tag = lxb_dom_element_tag_name(el,&len);
+
+            if (len==2 && memcmp(tag,"ul",2)==0) {
+                lxb_dom_node_t *li = node->first_child;
+                while (li) {
+                    if (li->type==LXB_DOM_NODE_TYPE_ELEMENT) {
+                        lxb_dom_element_t *li_el = lxb_dom_interface_element(li);
+                        const lxb_char_t *li_tag; size_t li_len;
+                        li_tag = lxb_dom_element_tag_name(li_el,&li_len);
+                        if (li_len==2 && memcmp(li_tag,"li",2)==0) {
+                            lxb_dom_node_t *a = li->first_child;
+                            while(a){
+                                if(a->type==LXB_DOM_NODE_TYPE_ELEMENT){
+                                    lxb_dom_element_t *a_el = lxb_dom_interface_element(a);
+                                    const lxb_char_t *atag; size_t alen;
+                                    atag = lxb_dom_element_tag_name(a_el,&alen);
+                                    if(alen==1 && atag[0]=='a'){
+                                        cJSON *item = cJSON_CreateObject();
+
+                                        /* href */
+                                        const lxb_char_t *href =
+                                          lxb_dom_element_get_attribute(a_el,(lxb_char_t*)"href",4,NULL);
+                                        if(href) cJSON_AddStringToObject(item,"href",(char*)href);
+
+                                        /* text */
+                                        lxb_dom_node_t *t = a->first_child;
+                                        if(t && t->type==LXB_DOM_NODE_TYPE_TEXT){
+                                            lxb_dom_character_data_t *cd = lxb_dom_interface_character_data(t);
+                                            size_t len = cd->data.length;
+                                            if(len>255) len=255;
+                                            char buffer[256];
+                                            memcpy(buffer,cd->data.data,len);
+                                            buffer[len]=0;
+                                            cJSON_AddStringToObject(item,"text",buffer);
+                                        }
+
+                                        if(cJSON_GetObjectItem(item,"text") || cJSON_GetObjectItem(item,"href"))
+                                            cJSON_AddItemToArray(items,item);
+                                        else
+                                            cJSON_Delete(item);
+                                        break; // only first <a> per li
+                                    }
+                                }
+                                a=a->next;
+                            }
+                        }
+                    }
+                    li = li->next;
+                }
+            }
         }
+        node=node->next;
     }
-    
-    // Get menu label/aria-label
-    lxb_dom_attr_t *aria_label = lxb_dom_element_attr_by_name(
-        menu_elem, (lxb_char_t*)"aria-label", 10);
-    if (aria_label) {
-        const lxb_char_t *label = lxb_dom_attr_value(aria_label, &len);
-        if (label && len > 0) {
-            char *label_str = malloc(len + 1);
-            memcpy(label_str, label, len);
-            label_str[len] = '\0';
-            cJSON_AddStringToObject(menu_json, "aria_label", label_str);
-            free(label_str);
-        }
-    }
-    
-    // Get menu styles
-    lxb_dom_attr_t *style_attr = lxb_dom_element_attr_by_id(menu_elem, LXB_DOM_ATTR_STYLE);
-    if (style_attr) {
-        cJSON *styles = parse_inline_styles_simple(style_attr);
-        if (styles) {
-            add_default_menu_styles(styles, menu_type);
-            cJSON_AddItemToObject(menu_json, "menu_style", styles);
-        } else {
-            cJSON *styles = create_default_menu_styles(menu_type);
-            cJSON_AddItemToObject(menu_json, "menu_style", styles);
-        }
-    } else {
-        cJSON *styles = create_default_menu_styles(menu_type);
-        cJSON_AddItemToObject(menu_json, "menu_style", styles);
-    }
-    
-    // Extract menu items
-    cJSON *items = extract_menu_items(menu_elem);
-    if (items) {
-        cJSON_AddItemToObject(menu_json, "items", items);
-        cJSON_AddNumberToObject(menu_json, "item_count", cJSON_GetArraySize(items));
-    }
-    
-    // Calculate menu dimensions
-    calculate_menu_dimensions(menu_json);
-    
-    if (menu_type) free(menu_type);
-    return menu_json;
+
+    return menu;
 }
 
-cJSON* extract_menu_items(lxb_dom_element_t *menu_elem) {
+cJSON* extract_menu_items(lxb_dom_element_t *menu_elem)
+{
     if (!menu_elem) return NULL;
-    
+
     cJSON *items_array = cJSON_CreateArray();
     int item_index = 0;
-    
-    lxb_dom_node_t *menu_node = lxb_dom_interface_node(menu_elem);
-    
-    // For <nav> elements, look for common menu structures
-    if (is_nav_element(menu_elem)) {
-        // <nav> can contain various structures: <ul>, <ol>, direct <a> links, etc.
-        extract_nav_content(menu_node, items_array, &item_index, 0);
-    } else {
-        // <menu> element - more specific
-        extract_menu_content(menu_node, items_array, &item_index, 0);
-    }
-    
-    if (cJSON_GetArraySize(items_array) > 0) {
-        return items_array;
-    } else {
-        cJSON_Delete(items_array);
-        return NULL;
-    }
-}
 
+    lxb_dom_node_t *root = lxb_dom_interface_node(menu_elem);
+    lxb_dom_node_t *node = root;
+
+    while (node) {
+
+        if (node->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+
+            lxb_dom_element_t *el = lxb_dom_interface_element(node);
+
+            const lxb_char_t *tag;
+            size_t tag_len;
+
+            tag = lxb_dom_element_tag_name(el, &tag_len);
+
+            if (tag_len == 1 && tag[0] == 'a') {
+
+                cJSON *item_json = cJSON_CreateObject();
+
+                size_t text_len;
+                lxb_char_t *text =
+                    lxb_dom_node_text_content(node, &text_len);
+
+                if (text && text_len > 0) {
+                    char *tmp = malloc(text_len + 1);
+                    memcpy(tmp, text, text_len);
+                    tmp[text_len] = 0;
+
+                    cJSON_AddStringToObject(item_json, "text", tmp);
+
+                    free(tmp);
+                    lxb_dom_document_destroy_text(node->owner_document, text);
+                }
+
+                const lxb_char_t *href =
+                    lxb_dom_element_get_attribute(el,
+                        (const lxb_char_t *)"href",4,NULL);
+
+                if (href) {
+                    cJSON_AddStringToObject(item_json,"href",(char*)href);
+                }
+
+                cJSON_AddNumberToObject(item_json,"item_index",item_index++);
+                cJSON_AddItemToArray(items_array,item_json);
+            }
+        }
+
+        if (node->first_child) {
+            node = node->first_child;
+            continue;
+        }
+
+        while (node && node != root && node->next == NULL) {
+            node = node->parent;
+        }
+
+        if (node == root)
+            break;
+
+        node = node->next;
+    }
+
+    return items_array;
+}
 
 
 cJSON* extract_menu_item(lxb_dom_element_t *item_elem, int item_index, int nesting_level) {
+    static int call_count = 0;
+    call_count++;
+    printf("🔍 extract_menu_item called #%d for element %p, index=%d, level=%d\n", 
+           call_count, item_elem, item_index, nesting_level);
+   
     cJSON *item_json = cJSON_CreateObject();
     cJSON_AddNumberToObject(item_json, "item_index", item_index);
     cJSON_AddNumberToObject(item_json, "nesting_level", nesting_level);
