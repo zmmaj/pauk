@@ -1,6 +1,5 @@
 //change_size.h
 
-// css_parser.h
 #ifndef CHANGE_SIZE_H
 #define CHANGE_SIZE_H
 
