@@ -1,7 +1,7 @@
 
 #include "main.h"
 #include "gui.h"
-//#include "lua_config.h"
+
 #include <ui/image.h>
 #include <ui/list.h>
 #include <ui/tab.h>
@@ -19,7 +19,6 @@
 #include <gfx/coord.h>
 #include <gfximage/tga.h>
 #include "change_size.h"
-//#include "images.h"
 
 void change_size(ui_pbutton_t *pbutton, void *arg)
 {
@@ -28,7 +27,8 @@ void change_size(ui_pbutton_t *pbutton, void *arg)
     gfx_rect_t new_rect;
     
     pauk_ui->full_screen_status = !pauk_ui->full_screen_status;
-    
+    ui_scrollbar_set_pos(pauk_ui->vscrollbar, global_pauk_ui->scroll_y);
+// global_pauk_ui->scroll_y = 0;
     if (pauk_ui->full_screen_status) {
         ui_window_def_maximize(pauk_ui->window);
         ui_window_get_app_rect(pauk_ui->window, &win_rect);
@@ -150,10 +150,6 @@ void change_size(ui_pbutton_t *pbutton, void *arg)
         if (thumb_length > view_height - 20) thumb_length = view_height - 20;
         ui_scrollbar_set_thumb_length(pauk_ui->vscrollbar, thumb_length);
         
-        if (DEB_INIT_SCROLLBAR) { 
-            printf("✅ Scrollbar repositioned for fullscreen - thumb: %d, view: %d\n", 
-                   thumb_length, view_height);
-        }
     }
     
             
@@ -165,6 +161,7 @@ void change_size(ui_pbutton_t *pbutton, void *arg)
 
 
        ui_window_paint(pauk_ui->window);
+       pixelmap_to_bitmap_copy( pauk_ui);
        gfx_update(pauk_ui->gc);
 
     } else {
@@ -222,7 +219,7 @@ void change_size(ui_pbutton_t *pbutton, void *arg)
      // Restore display rectangle
      if (pauk_ui->content_image) {
         ui_image_set_rect(pauk_ui->content_image, &pauk_ui->list_rect_base);
-        printf("✅ Display area restored to normal\n");
+       // printf("✅ Display area restored to normal\n");
     }
 
 
@@ -246,11 +243,7 @@ void change_size(ui_pbutton_t *pbutton, void *arg)
     if (thumb_length < 20) thumb_length = 20;
     if (thumb_length > view_height - 20) thumb_length = view_height - 20;
     ui_scrollbar_set_thumb_length(pauk_ui->vscrollbar, thumb_length);
-    
-    if (DEB_INIT_SCROLLBAR) { 
-        printf("✅ Scrollbar restored to normal - thumb: %d, view: %d\n", 
-               thumb_length, view_height);
-    }
+
 }
 
 // Update UI image rectangle back
@@ -260,6 +253,7 @@ if (pauk_ui->content_image) {
 }
 
         ui_window_paint(pauk_ui->window);
+        pixelmap_to_bitmap_copy( pauk_ui);
         gfx_update(pauk_ui->gc);
     }
     
