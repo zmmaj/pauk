@@ -6,7 +6,6 @@
 #include <time.h>
 
 // ========== HELPER FUNCTIONS ==========
-
 static char* lexbor_to_cstr(const lxb_char_t *lb_str, size_t len) {
     if (!lb_str || len == 0) return strdup("");
     
