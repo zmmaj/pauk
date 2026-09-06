@@ -16,7 +16,7 @@
 #define MAX_FONT_NAME_LEN 64
 #define FONT_CACHE_SIZE 256
 
-// ADD THIS STRUCTURE DEFINITION:
+
 typedef struct {
     const char *requested_font;
     const char *substitute_font;
@@ -45,6 +45,9 @@ typedef struct {
     html_font_t fonts[MAX_FONTS];
     int font_count;
     int default_font_index;
+    int bold_font_index;   
+    int italic_font_index;     
+    int bold_italic_font_index; 
     
     // Font family mappings
     struct {
