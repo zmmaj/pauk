@@ -35,5 +35,4 @@ int get_heading_level(const char *tag_name);
 const char* get_heading_level_name(int level);
 int should_reset_heading_counter(const char *tag_name); // For article, section, etc.
 void update_section_depth(const char *tag_name, DocumentOutline *outline, int is_closing);
-
 #endif // HEADINGS_PARSER_H
