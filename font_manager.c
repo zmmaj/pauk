@@ -16,24 +16,42 @@ static bool is_font_file(const char *filename) {
 }
 
 static const font_substitution_t default_substitutions[] = {
-    {"Arial", "arial.ttf", 10},
-    {"Helvetica", "arial.ttf", 10},
+    // ===== DEJAVU SANS (Best Unicode coverage - PRIORITY 1) =====
+    {"DejaVuSans", "DejaVuSans.ttf", 20},
+    {"DejaVu Sans", "DejaVuSans.ttf", 20},
+    {"DejaVuSansMono", "DejaVuSansMono.ttf", 20},
+    {"DejaVu Sans Mono", "DejaVuSansMono.ttf", 20},
+    
+    // ===== MODERN FONTS (High priority) =====
+    {"Arial", "DejaVuSans.ttf", 15},           // Use DejaVu instead
+    {"Helvetica", "DejaVuSans.ttf", 15},
+    {"Verdana", "DejaVuSans.ttf", 14},
+    {"Tahoma", "DejaVuSans.ttf", 13},
+    {"Geneva", "DejaVuSans.ttf", 12},
+    
+    // ===== SERIF FONTS =====
     {"Times New Roman", "times.ttf", 10},
     {"Times", "times.ttf", 10},
-    {"Courier New", "cour.ttf", 10},
-    {"Courier", "cour.ttf", 10},
-    {"Verdana", "arial.ttf", 8},           // Use FreeSans as Verdana substitute
-    {"Tahoma", "arial.ttf", 7},
-    {"Georgia", "times.ttf", 9},           // Use FreeSerif as Georgia
+    {"Georgia", "times.ttf", 9},
     {"Palatino", "times.ttf", 8},
     {"Garamond", "times.ttf", 8},
-    {"Comic Sans MS", "BananasItalic.ttf", 3},
-    {"Impact", "Oswald.ttf", 3},
-    {"Lucida Console", "cour.ttf", 5},
-    {"Trebuchet MS", "arial.ttf", 6},
-    {"monospace", "cour.ttf", 10},
+    
+    // ===== MONOSPACE FONTS =====
+    {"Courier New", "DejaVuSansMono.ttf", 12},  // Use DejaVu Mono instead
+    {"Courier", "DejaVuSansMono.ttf", 12},
+    {"monospace", "DejaVuSansMono.ttf", 12},
+    {"Consolas", "DejaVuSansMono.ttf", 11},
+    {"Monaco", "DejaVuSansMono.ttf", 10},
+    {"Lucida Console", "DejaVuSansMono.ttf", 9},
+    
+    // ===== GENERIC FAMILIES =====
+    {"sans-serif", "DejaVuSans.ttf", 10},
     {"serif", "times.ttf", 10},
-    {"sans-serif", "arial.ttf", 10},
+    
+    // ===== EXOTIC/DECORATIVE FONTS (lower priority) =====
+    {"Comic Sans MS", "BananasItalic.ttf", 5},
+    {"Impact", "Oswald.ttf", 5},
+    
     {NULL, NULL, 0}
 };
 
@@ -41,20 +59,20 @@ static const font_substitution_t default_substitutions[] = {
 void font_manager_init_substitutions(font_manager_t *manager) {
     manager->substitution_count = 0;
     
-    printf("[FONT-SUBSTITUTIONS] Initializing substitution table...\n");
+   // printf("[FONT-SUBSTITUTIONS] Initializing substitution table...\n");
     
     for (int i = 0; default_substitutions[i].requested_font != NULL; i++) {
         if (manager->substitution_count < 50) {
             manager->font_substitutions[manager->substitution_count] = default_substitutions[i];
-            printf("[FONT-SUBSTITUTIONS] %s -> %s (priority: %d)\n",
-                   default_substitutions[i].requested_font,
-                   default_substitutions[i].substitute_font,
-                   default_substitutions[i].priority);
+         //   printf("[FONT-SUBSTITUTIONS] %s -> %s (priority: %d)\n",
+          //         default_substitutions[i].requested_font,
+          //         default_substitutions[i].substitute_font,
+          //         default_substitutions[i].priority);
             manager->substitution_count++;
         }
     }
     
-    printf("[FONT-SUBSTITUTIONS] Total substitutions: %d\n", manager->substitution_count);
+   // printf("[FONT-SUBSTITUTIONS] Total substitutions: %d\n", manager->substitution_count);
 }
 
 // Find best font match
@@ -121,21 +139,33 @@ static void font_manager_add_family_mapping(font_manager_t *manager,
 errno_t font_manager_init(font_manager_t *manager) {
     memset(manager, 0, sizeof(font_manager_t));
     manager->default_font_index = -1;
+    manager->bold_font_index = -1;
+    manager->italic_font_index = -1;
+    manager->bold_italic_font_index = -1;
     
-    // Setup default font family mappings
-    // Setup default font family mappings with FreeFont files
-    font_manager_add_family_mapping(manager, "sans-serif", "arial.ttf");  // FreeSans
-    font_manager_add_family_mapping(manager, "serif", "times.ttf");       // FreeSerif  
-    font_manager_add_family_mapping(manager, "monospace", "cour.ttf");    // FreeMono
-    font_manager_add_family_mapping(manager, "Arial", "arial.ttf");
-    font_manager_add_family_mapping(manager, "Helvetica", "arial.ttf");
+    // ===== UPDATED: Prioritize DejaVuSans for better Unicode support =====
+    font_manager_add_family_mapping(manager, "sans-serif", "DejaVuSans.ttf");
+    font_manager_add_family_mapping(manager, "serif", "times.ttf");
+    font_manager_add_family_mapping(manager, "monospace", "DejaVuSansMono.ttf");
+    
+    // Common font families
+    font_manager_add_family_mapping(manager, "Arial", "DejaVuSans.ttf");  // Use DejaVu instead
+    font_manager_add_family_mapping(manager, "Helvetica", "DejaVuSans.ttf");
+    font_manager_add_family_mapping(manager, "Verdana", "DejaVuSans.ttf");
+    font_manager_add_family_mapping(manager, "Tahoma", "DejaVuSans.ttf");
     font_manager_add_family_mapping(manager, "Times", "times.ttf");
-    font_manager_add_family_mapping(manager, "Courier", "cour.ttf");
+    font_manager_add_family_mapping(manager, "Courier", "DejaVuSansMono.ttf");
+    font_manager_add_family_mapping(manager, "Courier New", "DejaVuSansMono.ttf");
     
     return EOK;
 }
 
 errno_t font_manager_load_fonts(font_manager_t *manager, const char *font_directory) {
+    static FILE* font_log = NULL;
+    if (!font_log) {
+        font_log = fopen("/data/web/font_debug.txt", "w");
+    }
+  
     const char *font_dir = "/data/font/";
     DIR *dir = opendir(font_dir);
     if (!dir) {
@@ -149,18 +179,16 @@ errno_t font_manager_load_fonts(font_manager_t *manager, const char *font_direct
     while ((ent = readdir(dir)) && manager->font_count < MAX_FONTS) {
         if (!is_font_file(ent->d_name)) continue;
 
-        // Check filename length to prevent buffer overflow
+        // Check filename length
         size_t name_len = str_length(ent->d_name);
-        if (name_len > 200) {  // Reasonable limit for font filenames
+        if (name_len > 200) {
             printf("Font filename too long, skipping: %s\n", ent->d_name);
             continue;
         }
 
-        // Increased buffer size for safety
-        char fullpath[512];  // Increased from 256 to 512
+        // Build full path
+        char fullpath[512];
         int written = snprintf(fullpath, sizeof(fullpath), "/data/font/%s", ent->d_name);
-        
-        // Check if the path was truncated
         if (written < 0 || (size_t)written >= sizeof(fullpath)) {
             printf("Font path too long, skipping: %s\n", ent->d_name);
             continue;
@@ -173,18 +201,19 @@ errno_t font_manager_load_fonts(font_manager_t *manager, const char *font_direct
             continue;
         }
 
-        // Get file size and read data
+        // Get file size
         fseek(font_file, 0, SEEK_END);
         size_t file_size = ftell(font_file);
         fseek(font_file, 0, SEEK_SET);
 
-        // Check if font file is reasonable size (under 10MB)
+        // Check size
         if (file_size > 10 * 1024 * 1024) {
             printf("Font file too large (%zu bytes), skipping: %s\n", file_size, ent->d_name);
             fclose(font_file);
             continue;
         }
 
+        // Allocate memory
         unsigned char *font_data = malloc(file_size);
         if (!font_data) {
             fclose(font_file);
@@ -192,6 +221,7 @@ errno_t font_manager_load_fonts(font_manager_t *manager, const char *font_direct
             continue;
         }
 
+        // Read font data
         size_t bytes_read = fread(font_data, 1, file_size, font_file);
         fclose(font_file);
         
@@ -222,18 +252,65 @@ errno_t font_manager_load_fonts(font_manager_t *manager, const char *font_direct
             continue;
         }
 
-        // Store font information
+        // ========== STORE FONT INFORMATION ==========
         str_cpy(font->name, MAX_FONT_NAME_LEN, ent->d_name);
         str_cpy(font->path, sizeof(font->path), fullpath);
         font->font_data = font_data;
         font->font_size = file_size;
         font->is_loaded = true;
 
-        // Set as default if it's Arial
-        if (manager->default_font_index == -1 && 
-            (str_casecmp(ent->d_name, "arial.ttf") == 0 || str_str(ent->d_name, "arial"))) {
-            manager->default_font_index = manager->font_count;
+        const char *name = ent->d_name;
+
+        // ========== DETECT FONT VARIANTS ==========
+        int has_bold = (str_str(name, "bold") != NULL || 
+                        str_str(name, "Bold") != NULL || 
+                        str_str(name, "bd") != NULL);
+                        
+        int has_italic = (str_str(name, "italic") != NULL || 
+                          str_str(name, "Italic") != NULL || 
+                          str_str(name, "oblique") != NULL);
+
+        // Determine font type
+        int is_bold_italic = (has_bold && has_italic);
+        int is_bold = (has_bold && !has_italic);
+        int is_italic = (!has_bold && has_italic);
+
+        // Log the font
+        fprintf(font_log, "📁 Loaded font: %s\n", ent->d_name);
+        
+        // ========== SET INDICES ==========
+        if (is_bold_italic) {
+            if (manager->bold_italic_font_index == -1) {
+                manager->bold_italic_font_index = manager->font_count;
+                fprintf(font_log, "  ✅ Bold-Italic font at index %d\n", manager->font_count);
+            }
+        } else if (is_bold) {
+            if (manager->bold_font_index == -1) {
+                manager->bold_font_index = manager->font_count;
+                fprintf(font_log, "  ✅ Bold font at index %d\n", manager->font_count);
+            }
+        } else if (is_italic) {
+            if (manager->italic_font_index == -1) {
+                manager->italic_font_index = manager->font_count;
+                fprintf(font_log, "  ✅ Italic font at index %d\n", manager->font_count);
+            }
         }
+
+// ===== UPDATED: Prioritize DejaVuSans as default font =====
+// First try to set DejaVuSans as default
+if (manager->default_font_index == -1 &&
+    (str_casecmp(name, "DejaVuSans.ttf") == 0 || 
+     str_casecmp(name, "dejavusans.ttf") == 0 ||
+     str_str(name, "DejaVuSans") != NULL)) {
+    manager->default_font_index = manager->font_count;
+    fprintf(font_log, " ✅ Default font (DejaVuSans) at index %d\n", manager->font_count);
+}
+// Fallback to Arial if DejaVu not found
+else if (manager->default_font_index == -1 &&
+    (str_casecmp(name, "arial.ttf") == 0 || str_str(name, "arial"))) {
+    manager->default_font_index = manager->font_count;
+    fprintf(font_log, " ✅ Fallback default font (Arial) at index %d\n", manager->font_count);
+}
 
         manager->font_count++;
     }
@@ -243,16 +320,14 @@ errno_t font_manager_load_fonts(font_manager_t *manager, const char *font_direct
     // Set default font if none was set
     if (manager->default_font_index == -1 && manager->font_count > 0) {
         manager->default_font_index = 0;
+        fprintf(font_log, "⚠️ No default font set, using index 0\n");
     }
 
-    printf("Loaded %d fonts from %s\n", manager->font_count, font_dir);
-    printf("[FONT] FINAL: Loaded %d fonts, default index: %d\n", 
-        manager->font_count, manager->default_font_index);
- if (manager->default_font_index >= 0 && manager->default_font_index < manager->font_count) {
-     printf("[FONT] Default font: %s\n", manager->fonts[manager->default_font_index].name);
- } else {
-     printf("[FONT] ❌ INVALID default index!\n");
- }
+    if (font_log) {
+        fclose(font_log);
+        font_log = NULL;
+    }
+
     return EOK;
 }
 
@@ -305,37 +380,56 @@ html_font_t* font_manager_get_font(font_manager_t *manager, int index) {
 }
 
 int font_manager_text_width(font_manager_t *manager, int font_index, int size, 
-                          const char *text, int length) {
-    if (length <= 0) return 0;
-    
-    html_font_t *font = font_manager_get_font(manager, font_index);
-    if (!font || !font->is_loaded) {
-        return str_length(text) * 8; // Fallback
-    }
-    
-    float scale = stbtt_ScaleForPixelHeight(&font->info, size);
-    
-    int width = 0;
-    const char *p = text;
-    int chars_processed = 0;
-    
-    while (*p && chars_processed < length) {
-        int codepoint = (unsigned char)*p++;
-        chars_processed++;
-        
-        // Basic ASCII handling - extend for UTF-8 later
-        int advance, lsb;
-        stbtt_GetCodepointHMetrics(&font->info, codepoint, &advance, &lsb);
-        width += (int)(advance * scale);
-        
-        // Add kerning for next character
-        if (*p && chars_processed < length) {
-            int kern = stbtt_GetCodepointKernAdvance(&font->info, codepoint, (unsigned char)*p);
-            width += (int)(kern * scale);
-        }
-    }
-    
-    return width;
+    const char *text, int length) {
+if (length <= 0) return 0;
+
+html_font_t *font = font_manager_get_font(manager, font_index);
+if (!font || !font->is_loaded) {
+return str_length(text) * 8; // Fallback
+}
+
+float scale = stbtt_ScaleForPixelHeight(&font->info, size);
+
+int width = 0;
+const char *p = text;
+int chars_processed = 0;
+
+while (*p && chars_processed < length) {
+int codepoint = (unsigned char)*p++;
+chars_processed++;
+
+int advance, lsb;
+stbtt_GetCodepointHMetrics(&font->info, codepoint, &advance, &lsb);
+
+// ========== ADD MINIMUM WIDTH PER CHARACTER ==========
+int char_width = (int)(advance * scale);
+int min_char_width = size * 0.3; // 30% of font size minimum
+
+if (char_width < min_char_width) {
+printf("⚠️ Character %c width too small: %dpx → forcing to %dpx\n", 
+codepoint, char_width, min_char_width);
+char_width = min_char_width;
+}
+// ======================================================
+
+width += char_width;
+
+if (*p && chars_processed < length) {
+int kern = stbtt_GetCodepointKernAdvance(&font->info, codepoint, (unsigned char)*p);
+width += (int)(kern * scale);
+}
+}
+
+// ========== ADD OVERALL MINIMUM WIDTH ==========
+int expected_min = strlen(text) * (size * 0.5); // 50% of font size per char
+if (width < expected_min) {
+printf("⚠️ Text '%s' too narrow: %dpx → forcing to %dpx\n", 
+text, width, expected_min);
+width = expected_min;
+}
+// ================================================
+
+return width;
 }
 
 int font_manager_line_height(font_manager_t *manager, int font_index, int size) {
