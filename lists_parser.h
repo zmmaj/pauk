@@ -13,6 +13,7 @@ typedef struct ListToExtract {
     const char *list_type; // "ul" or "ol"
 } ListToExtract;
 
+
 // Function prototypes
 void store_list_for_extraction(lxb_dom_element_t *list_elem, const char *filename, const char *list_type);
 cJSON* extract_list_structure(lxb_dom_element_t *list_elem);
