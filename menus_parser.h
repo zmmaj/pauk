@@ -16,8 +16,11 @@ typedef struct MenuToExtract {
 // Menu extraction functions
 void store_menu_for_extraction(lxb_dom_element_t *menu_elem, const char *filename, const char *menu_type);
 cJSON* extract_menu_structure(lxb_dom_element_t *menu_elem);
+cJSON *extract_menu_fast(lxb_dom_element_t *nav_elem);
 cJSON* extract_menu_items(lxb_dom_element_t *menu_elem);
 cJSON* extract_menu_item(lxb_dom_element_t *item_elem, int item_index, int nesting_level);
+const char* detect_menu_orientation(lxb_dom_element_t *menu_elem);
+
 
 // Getter functions
 int get_menu_count(void);
