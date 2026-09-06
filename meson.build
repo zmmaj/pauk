@@ -34,42 +34,73 @@ c_args = [
 
 
 deps = [ 'http', 'uri', 'lexbor' , 'console','inet','ui', 'gfx',
- 'gfximage', 'gfxfont', 'posix', 'json', 'quickjs','mbedtls','lua']
+ 'gfximage', 'gfxfont', 'posix', 'json', 'quickjs','mbedtls','lua','miniz',
+  'libwebp','libjpeg','libhttps_download','nanosvg']
 src = files(
 	'main.c',
+	'layout_engine.c',
 	'css_parser.c',
 	'js_executor_quickjs.c',
 	'event_handler.c',
-	'layout_engine.c',
+	'pauk_tls.c',
+	'network.c',
+	'connection_pool.c',
+	'url_utils.c',
 	'forms_parser.c',
 	'tables_parser.c',
 	'lists_parser.c',
 	'menus_parser.c',
 	'img_parser.c',
+	'image_downloader.c',
 	'media_parser.c',
 	'link_parsing.c',
 	'headings_parser.c',
-	'iframe_parsing.c',
-	'render_output.c',
-	'layout_calculator.c',
-	'lua_position.c',
-	'position_layout.c',
 	'render_func.c',
 	'gui.c',
+	'bookmarks.c',
 	'font_manager.c',
-	
+	'change_size.c',
+	'text_rules.c',
+	'cursor.c',
+	'buttons.c',
+	'cookie.c',
+	'image_cache.c',
+	'time_utils.c',
+	'stb_image_impl.c',
+	'resource_filter.c',
+	'rendering_elements/defaults.c',
+
 )
 
 
 if install_nonessential_data
 	# TODO: install this file somewhere else eg in font dir
+	installed_data += { 'name': 'cacert.pem', 'dir': '/' }
+	installed_data += { 'name': 'cacert.der', 'dir': '/' }
+	#installed_data += { 'name': 'pomoc.html', 'dir': '/' }
+	installed_data += { 'name': 'tabela.html', 'dir': '/' }
+	installed_data += { 'name': 'gogle.html', 'dir': '/' }
 	installed_data += { 'name': 'text.html', 'dir': '/' }
+		installed_data += { 'name': 'testcss.html', 'dir': '/' }
+			installed_data += { 'name': 'test.css', 'dir': '/' }
+	installed_data += { 'name': 'test_js.html', 'dir': '/' }
+	installed_data += { 'name': 'example_test.html', 'dir': '/' }
+	installed_data += { 'name': 'test.js', 'dir': '/' }
+	installed_data += { 'name': 'example.html', 'dir': '/' }
 	installed_data += { 'name': 'text1.html', 'dir': '/' }
+	installed_data += { 'name': 'text2.html', 'dir': '/' }
 	installed_data += { 'name': 'slika.html', 'dir': '/' }
 	installed_data += { 'name': 'script.html', 'dir': '/' }
 	installed_data += { 'name': 'test.xml', 'dir': '/' }
-	installed_data += { 'name': 'test.svg', 'dir': '/' }
-	installed_data += { 'name': 'position_calculator.lua', 'dir': '/' }
-	installed_data += { 'name': 'position_calculator_final.lua', 'dir': '/' }
+	installed_data += { 'name': 'png.png', 'dir': '/' }
+	installed_data += { 'name': 'bmp.bmp', 'dir': '/' }
+	installed_data += { 'name': 'gif.gif', 'dir': '/' }
+	installed_data += { 'name': 'jpg.jpg', 'dir': '/' }
+	installed_data += { 'name': 'pnm.pnm', 'dir': '/' }
+	installed_data += { 'name': 'ppm.ppm', 'dir': '/' }
+	installed_data += { 'name': 'tga.tga', 'dir': '/' }
+	installed_data += { 'name': 's4.jpg', 'dir': '/' }
+	installed_data += { 'name': 'snimanje.jpeg', 'dir': '/' }
+	installed_data += { 'name': 'webp.webp', 'dir': '/' }
 
 endif
