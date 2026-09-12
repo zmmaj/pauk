@@ -1,388 +1,178 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <lexbor/html/html.h>
-#include <lexbor/dom/dom.h>
-#include <lexbor/css/css.h>
-#include <cjson.h>
-#include "css_parser.h"
+#ifndef MAIN_H
+#define MAIN_H
+
+#include "lexbor/html/html.h"
+#include "lexbor/dom/dom.h"
+#include "lexbor/css/css.h"
+
+#include "cjson.h"
+#include "gui.h"
+#include "cjson_utils.h"
+#include "css_parser.h" 
 #include "js_executor_quickjs.h"
+#include "event_handler.h" 
+#include <ui/ui.h>
+#include <ui/pbutton.h>
+#include <time.h>
 
-#define DEBUG 1
+#define LAYOUT_DEBUG 0
+#define INFO_MESSAGES 1
+#define INFO_MESSAGES_JS 1
+#define KOPIRAJ 1
 
-// Safe string copy from Lexbor string to C string
-char* lexbor_to_cstr(const lxb_char_t *lb_str, size_t len) {
-    if (!lb_str || len == 0) return strdup("");
-    char *cstr = malloc(len + 1);
-    if (!cstr) return NULL;
-    memcpy(cstr, lb_str, len);
-    cstr[len] = '\0';
-    return cstr;
-}
+#define HAVE_MBEDTLS 1
 
-// Write JSON to file
-void write_json_to_file(const char *filename, cJSON *json) {
-    FILE *f = fopen(filename, "wb");
-    if (!f) { perror("Failed to open output file"); return; }
-    char *json_str = cJSON_Print(json);
-    if (json_str) {
-        fputs(json_str, f);
-        free(json_str);
-    }
-    fclose(f);
-}
+typedef struct {
+    void** blocks;
+    size_t count;
+    size_t capacity;
+} MemoryPool;
 
-// Trim whitespace helper
-char* trim_whitespace(char *str) {
-    if (!str) return NULL;
-    while (*str == ' ' || *str == '\n' || *str == '\t' || *str == '\r') str++;
-    char *end = str + strlen(str) - 1;
-    while (end > str && (*end == ' ' || *end == '\n' || *end == '\t' || *end == '\r')) {
-        *end = '\0';
-        end--;
-    }
-    return str;
-}
+void memory_pool_init(MemoryPool* pool);
+void* memory_pool_alloc(MemoryPool* pool, size_t size);
+void memory_pool_free_all(MemoryPool* pool);
 
-// Get element text (concatenate all text nodes inside element)
-char* get_element_text(lxb_dom_element_t *elem) {
-    if (!elem) return strdup("");
-    lxb_dom_node_t *node = lxb_dom_interface_node(elem);
-    if (!node) return strdup("");
+typedef enum {
+    ERR_SUCCESS = 0,
+    ERR_LEXBOR_PARSE_FAILED,
+    ERR_QUICKJS_INIT_FAILED,
+    ERR_MEMORY_ALLOCATION,
+    ERR_FILE_IO,
+    ERR_INVALID_HTML
+} BrowserErrorCode;
 
-    const lxb_char_t *text = lxb_dom_node_text_content(node, NULL);
-    if (!text) return strdup("");
+const char* browser_error_string(BrowserErrorCode code);
 
-    size_t len = strlen((char*)text);
-    char *cstr = malloc(len + 1);
-    if (!cstr) return strdup("");
-    memcpy(cstr, text, len);
-    cstr[len] = '\0';
-    return cstr;
-}
+typedef struct {
+    size_t max_memory_mb;
+    int enable_javascript;
+    int enable_css;
+    int max_dom_depth;
+    const char* user_agent;
+} BrowserConfig;
 
-// Convert element attributes to JSON object
-cJSON* element_attributes_to_json(lxb_dom_element_t *elem) {
-    if (!elem) return NULL;
-    lxb_dom_attr_t *attr = lxb_dom_element_first_attribute(elem);
-    if (!attr) return NULL;
+BrowserConfig* browser_config_default(void);
 
-    cJSON *attrs = cJSON_CreateObject();
-    int has_attrs = 0;
-    size_t len;
-
-    while (attr) {
-        const lxb_char_t *name = lxb_dom_attr_qualified_name(attr, &len);
-        const lxb_char_t *value = lxb_dom_attr_value(attr, NULL);
-        if (name && value) {
-            char *name_str = lexbor_to_cstr(name, len);
-            char *value_str = lexbor_to_cstr(value, strlen((char*)value));
-            if (name_str && value_str) {
-                char *val = trim_whitespace(value_str);
-                cJSON_AddStringToObject(attrs, name_str, val);
-                has_attrs = 1;
-            }
-            free(name_str);
-            free(value_str);
-        }
-        attr = lxb_dom_element_next_attribute(attr);
-    }
-
-    if (!has_attrs) {
-        cJSON_Delete(attrs);
-        return NULL;
-    }
-    return attrs;
-}
-
-// Convert single element to JSON
-cJSON* element_to_json(lxb_dom_element_t *elem) {
-    if (!elem) return NULL;
-    cJSON *json = cJSON_CreateObject();
-    if (!json) return NULL;
-
-    size_t len;
-    const lxb_char_t *tag_name = lxb_dom_element_qualified_name(elem, &len);
-    if (tag_name && len > 0) {
-        char *tag = lexbor_to_cstr(tag_name, len);
-        if (tag) { cJSON_AddStringToObject(json, "tag", tag); free(tag); }
-    }
-
-    const lxb_char_t *id = lxb_dom_element_id(elem, &len);
-    if (id && len > 0) {
-        char *id_str = lexbor_to_cstr(id, len);
-        if (id_str) { cJSON_AddStringToObject(json, "id", id_str); free(id_str); }
-    }
-
-    const lxb_char_t *cls = lxb_dom_element_class(elem, &len);
-    if (cls && len > 0) {
-        char *cls_str = lexbor_to_cstr(cls, len);
-        if (cls_str) { cJSON_AddStringToObject(json, "class", cls_str); free(cls_str); }
-    }
-
-    cJSON *attrs = element_attributes_to_json(elem);
-    if (attrs) cJSON_AddItemToObject(json, "attrs", attrs);
-
-    char *text = get_element_text(elem);
-    if (text) {
-        char *trimmed = trim_whitespace(text);
-        if (strlen(trimmed) > 0) cJSON_AddStringToObject(json, "text", trimmed);
-        free(text);
-    }
-
-    return json;
-}
-
-// Recursively traverse DOM tree
-cJSON* traverse_dom_node(lxb_dom_node_t *node) {
-    if (!node) return NULL;
-
-    cJSON *json_node = NULL;
-
-    if (node->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-        lxb_dom_element_t *elem = lxb_dom_interface_element(node);
-        json_node = element_to_json(elem);
-
-        lxb_dom_node_t *child = lxb_dom_node_first_child(node);
-        if (child) {
-            cJSON *children_array = cJSON_CreateArray();
-            while (child) {
-                cJSON *child_json = traverse_dom_node(child);
-                if (child_json) cJSON_AddItemToArray(children_array, child_json);
-                child = lxb_dom_node_next(child);
-            }
-            if (cJSON_GetArraySize(children_array) > 0)
-                cJSON_AddItemToObject(json_node, "children", children_array);
-            else
-                cJSON_Delete(children_array);
-        }
-    }
-    else if (node->type == LXB_DOM_NODE_TYPE_TEXT) {
-        const lxb_char_t *text = lxb_dom_node_text_content(node, NULL);
-        if (text && strlen((char*)text) > 0) {
-            cJSON *txt = cJSON_CreateObject();
-            cJSON_AddStringToObject(txt, "type", "text");
-            char *t = lexbor_to_cstr(text, strlen((char*)text));
-            char *trimmed = trim_whitespace(t);
-            if (strlen(trimmed) > 0) cJSON_AddStringToObject(txt, "content", trimmed);
-            free(t);
-            json_node = txt;
-        }
-    }
-
-    return json_node;
-}
+typedef struct {
+    lxb_dom_element_t* element;
+    char* computed_html;
+    size_t hash;
+    time_t last_accessed;
+} DOMCacheEntry;
 
 
-// List of HTML inline event attributes
-const char* html_event_attrs[] = {
-    "onclick","ondblclick","onchange","oninput","onsubmit","onfocus","onblur",
-    "onkeydown","onkeyup","onkeypress","onmouseenter","onmouseleave",NULL
-};
+// In your CSS parsing function, store rules like this:
+typedef struct {
+    char *selector;      // ".green-box" or "#div1"
+    char *property;      // "background-color"
+    char *value;         // "green"
+} CSSRule;
 
-// Extract events from element
-void extract_element_events(lxb_dom_element_t *elem, cJSON *events_array) {
-    if (!elem || !events_array) return;
-
-    size_t len;
-    const char **ev = html_event_attrs;
-    while (*ev) {
-        lxb_dom_attr_t *attr = lxb_dom_element_attr_by_name(elem, (lxb_char_t*)*ev, strlen(*ev));
-        if (attr) {
-            const lxb_char_t *value = lxb_dom_attr_value(attr, NULL);
-            if (value && strlen((char*)value) > 0) {
-                cJSON *ev_obj = cJSON_CreateObject();
-                cJSON_AddStringToObject(ev_obj, "type", *ev + 2); // strip "on"
-                cJSON_AddStringToObject(ev_obj, "code", (char*)value);
-
-                const lxb_char_t *tag = lxb_dom_element_qualified_name(elem, &len);
-                if (tag) {
-                    char *tag_str = lexbor_to_cstr(tag, len);
-                    cJSON_AddStringToObject(ev_obj, "element", tag_str);
-                    free(tag_str);
-                }
-
-                const lxb_char_t *id = lxb_dom_element_id(elem, &len);
-                if (id && len > 0) {
-                    char *id_str = lexbor_to_cstr(id, len);
-                    cJSON_AddStringToObject(ev_obj, "id", id_str);
-                    free(id_str);
-                }
-
-                cJSON_AddItemToArray(events_array, ev_obj);
-            }
-        }
-        ev++;
-    }
-
-    // Recursively extract from children
-    lxb_dom_node_t *child = lxb_dom_node_first_child(lxb_dom_interface_node(elem));
-    while (child) {
-        if (child->type == LXB_DOM_NODE_TYPE_ELEMENT)
-            extract_element_events(lxb_dom_interface_element(child), events_array);
-        child = lxb_dom_node_next(child);
-    }
-}
+extern CSSRule *css_rules;
+extern int css_rule_count;
+extern char *g_current_base_url;
+extern int hover_timer_running;
+extern int g_site_complexity_score;
+extern int g_max_events_processed;
+// Function prototypes
+void write_json_to_file(const char *filename, cJSON *json);
+char* lexbor_to_cstr(const lxb_char_t *lb_str, size_t len);
+char* get_element_text(lxb_dom_element_t *elem);
+cJSON* element_to_json(lxb_dom_element_t *elem);
+cJSON* traverse_node(lxb_dom_node_t *node);
+int parse_html_file(const char *html_file, const char *json_file);
+//void run_lua_bridge(const char *json_file);
+cJSON* process_element_simple(lxb_dom_element_t *elem, void *css_proc, cJSON *global_stylesheets);
 
 
-// Convert style attribute string to JSON object
-cJSON* parse_inline_style(const char *style_str) {
-    if (!style_str || strlen(style_str) == 0) return NULL;
-
-    cJSON *json_style = cJSON_CreateObject();
-    char *s = strdup(style_str);
-    char *token = strtok(s, ";");
-    while (token) {
-        char *colon = strchr(token, ':');
-        if (colon) {
-            *colon = 0;
-            char *key = trim_whitespace(token);
-            char *value = trim_whitespace(colon + 1);
-            if (strlen(key) > 0 && strlen(value) > 0)
-                cJSON_AddStringToObject(json_style, key, value);
-        }
-        token = strtok(NULL, ";");
-    }
-    free(s);
-    return json_style;
-}
-
-// Extract inline styles from element
-void extract_element_styles(lxb_dom_element_t *elem, cJSON *stylesheets_array) {
-    if (!elem || !stylesheets_array) return;
-
-    size_t len;
-    const lxb_char_t *style_attr = lxb_dom_element_attr_value_by_name(elem, (lxb_char_t*)"style", 5, &len);
-    if (style_attr && len > 0) {
-        char *style_str = lexbor_to_cstr(style_attr, len);
-        cJSON *style_json = parse_inline_style(style_str);
-        if (style_json) {
-            cJSON_AddStringToObject(style_json, "element", lxb_dom_element_qualified_name(elem, &len) ? lexbor_to_cstr(lxb_dom_element_qualified_name(elem, &len), len) : "");
-            const lxb_char_t *id = lxb_dom_element_id(elem, &len);
-            if (id && len > 0) {
-                char *id_str = lexbor_to_cstr(id, len);
-                cJSON_AddStringToObject(style_json, "id", id_str);
-                free(id_str);
-            }
-            cJSON_AddItemToArray(stylesheets_array, style_json);
-        }
-        free(style_str);
-    }
-
-    // recursively process children
-    lxb_dom_node_t *child = lxb_dom_node_first_child(lxb_dom_interface_node(elem));
-    while (child) {
-        if (child->type == LXB_DOM_NODE_TYPE_ELEMENT)
-            extract_element_styles(lxb_dom_interface_element(child), stylesheets_array);
-        child = lxb_dom_node_next(child);
-    }
-}
-
-// Extract <style> tag CSS
-void extract_style_tags(lxb_dom_node_t *root, cJSON *stylesheets_array) {
-    lxb_dom_node_t *child = lxb_dom_node_first_child(root);
-    while (child) {
-        if (child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-            lxb_dom_element_t *elem = lxb_dom_interface_element(child);
-            size_t len;
-            const lxb_char_t *tag = lxb_dom_element_qualified_name(elem, &len);
-            if (tag && strncmp((char*)tag, "style", 5) == 0) {
-                const lxb_char_t *text = lxb_dom_node_text_content(lxb_dom_interface_node(elem), NULL);
-                if (text && strlen((char*)text) > 0) {
-                    cJSON *style_json = cJSON_CreateObject();
-                    cJSON_AddStringToObject(style_json, "css", (char*)text);
-                    cJSON_AddItemToArray(stylesheets_array, style_json);
-                }
-            }
-            extract_style_tags(lxb_dom_interface_node(elem), stylesheets_array);
-        }
-        child = lxb_dom_node_next(child);
-    }
-}
+cJSON* parse_inline_styles_with_lexbor(const lxb_char_t *css_text);
 
 
-void execute_scripts(lxb_dom_node_t *root) {
-    lxb_dom_node_t *child = lxb_dom_node_first_child(root);
-    while (child) {
-        if (child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-            lxb_dom_element_t *elem = lxb_dom_interface_element(child);
-            size_t len;
-            const lxb_char_t *tag = lxb_dom_element_qualified_name(elem, &len);
-            if (tag && strncmp((char*)tag, "script", 6) == 0) {
-                const lxb_char_t *text = lxb_dom_node_text_content(lxb_dom_interface_node(elem), NULL);
-                if (text && strlen((char*)text) > 0) {
-                    // Execute script via QuickJS
-                    quickjs_execute((char*)text); // implement in your js_executor_quickjs.h
-                }
-            }
-            execute_scripts(lxb_dom_interface_node(elem));
-        }
-        child = lxb_dom_node_next(child);
-    }
-}
+cJSON* build_dom_tree(lxb_dom_node_t *node, cJSON *parent_json);
+
+lxb_html_document_t* parse_html_document(const char *html_file, cJSON **output_json);
+
+//events
+void process_all_events(lxb_html_document_t *doc);
+void add_events_to_json(cJSON *root_json, lxb_html_document_t *doc);
+cJSON* build_dom_with_events(lxb_dom_node_t *node);
+cJSON* process_element_with_events(lxb_dom_element_t *elem);
+cJSON* process_node_with_children(lxb_dom_node_t *node, int depth, cJSON *global_stylesheets);
+cJSON* get_element_events_json(lxb_dom_element_t *elem);
+
+cJSON* extract_classes_from_element(lxb_dom_element_t *elem);
+
+void merge_layout_with_element(cJSON *elem_json, cJSON *layout_data);
+cJSON* process_element_basic(lxb_dom_element_t *elem, void *css_proc, cJSON *global_stylesheets);
 
 
-int main(int argc, char **argv) {
-    if (argc < 3) {
-        printf("Usage: %s input.html output.json\n", argv[0]);
-        return 1;
-    }
+cJSON* element_to_rendering_json(lxb_dom_element_t *elem, int is_inline);
+char* get_element_text_simple(lxb_dom_element_t *elem);
+char* get_element_text_recursive(lxb_dom_element_t *elem);
+cJSON* parse_inline_styles_simple(lxb_dom_attr_t *style_attr);
+cJSON* process_node_for_rendering(lxb_dom_node_t *node, int depth);
+int generate_rendering_output(const char *html_file, const char *output_file);
+cJSON* process_element_for_rendering(lxb_dom_node_t *node, int depth);
 
-    const char *input_file = argv[1];
-    const char *output_file = argv[2];
+// TABELE
+void store_table_for_extraction(lxb_dom_element_t *table_elem, const char *filename);
+cJSON* extract_table_structure(lxb_dom_element_t *table_elem);
+cJSON* extract_table_rows_direct(lxb_dom_element_t *table_elem);
+cJSON* extract_table_row(lxb_dom_element_t *row_elem, int row_index);
+cJSON* extract_table_cell(lxb_dom_element_t *cell_elem, int row_index, int cell_index);
+void calculate_table_dimensions(cJSON *table_json);
 
-    FILE *f = fopen(input_file, "rb");
-    if (!f) { perror("Failed to open input file"); return 1; }
-    fseek(f, 0, SEEK_END);
-    size_t size = ftell(f);
-    fseek(f, 0, SEEK_SET);
+cJSON* extract_table_caption(lxb_dom_element_t *table_elem);
+cJSON* extract_table_header(lxb_dom_element_t *table_elem);
+cJSON* extract_table_body(lxb_dom_element_t *table_elem);
+cJSON* extract_table_footer(lxb_dom_element_t *table_elem);
+cJSON* extract_table_rows_direct(lxb_dom_element_t *table_elem);
 
-    char *html_content = malloc(size + 1);
-    fread(html_content, 1, size, f);
-    html_content[size] = '\0';
-    fclose(f);
 
-    // Initialize Lexbor HTML parser
-    lxb_html_document_t *doc = lxb_html_document_create();
-    lxb_status_t status = lxb_html_document_parse(doc, (const lxb_char_t*)html_content, size, true);
-    if (status != LXB_STATUS_OK) {
-        fprintf(stderr, "HTML parse failed\n");
-        free(html_content);
-        return 1;
-    }
 
-    lxb_dom_document_t *dom_doc = lxb_html_document_dom_interface(doc);
+int kopiraj_fajl(const char *src_file);
 
-    // Prepare output JSON
-    cJSON *root_json = cJSON_CreateObject();
+void assign_element_ids(cJSON *element, int parent_id, int *id_counter);
+cJSON* find_parent_json(cJSON* root, int parent_id); 
+cJSON* build_hierarchy_with_ids(lxb_dom_node_t* root_node, cJSON* parent_container) ;
+cJSON* build_document_hierarchy(lxb_html_document_t* document);
 
-    // DOM
-    lxb_dom_node_t *body = lxb_dom_document_body(dom_doc);
-    cJSON *dom_json = traverse_dom_node((lxb_dom_node_t*)body);
-    cJSON_AddItemToObject(root_json, "dom", dom_json ? dom_json : cJSON_CreateObject());
+//IFRAME
+void process_iframe_attributes(lxb_dom_element_t *elem, cJSON *elem_json);
+void calculate_iframe_dimensions(cJSON *elem_json);
 
-    // Stylesheets
-    cJSON *stylesheets_json = cJSON_CreateArray();
-    if (body) {
-        extract_element_styles(lxb_dom_interface_element(body), stylesheets_json);
-        extract_style_tags((lxb_dom_node_t*)body, stylesheets_json);
-    }
-    cJSON_AddItemToObject(root_json, "stylesheets", stylesheets_json);
+//ELEMENT INITIALIZER
+char* get_element_tag(lxb_dom_element_t *elem);
+cJSON* initialize_element(lxb_dom_element_t *elem, const char *tag, cJSON *parent_json, int depth);
+int is_element_visible(lxb_dom_element_t *elem);
+void process_child_elements(lxb_dom_element_t *parent_elem, cJSON *parent_json, 
+                           int depth, int *element_counter);
 
-    // Events
-    cJSON *events_json = cJSON_CreateArray();
-    if (body) extract_element_events(lxb_dom_interface_element(body), events_json);
-    cJSON_AddItemToObject(root_json, "events", events_json);
+void process_common_attributes(lxb_dom_element_t *elem, cJSON *elem_json, const char *tag);
+cJSON* process_html_to_json(lxb_html_document_t *document, cJSON *all_stylesheets);
+void extract_and_parse_css_styles(lxb_html_document_t *document, cJSON *output_json);
+void apply_css_rule_to_element(cJSON *rule, cJSON *elem_json);
+void add_css_rule(const char *selector, const char *property, const char *value);
+void apply_all_css_rules_to_element(cJSON *element);
+void apply_css_to_tree(cJSON *element);
+cJSON* procesuiraj_elemente(lxb_dom_node_t *node, int depth, cJSON *parent_json);
+ void dodaj_css( cJSON *output_json);
+ void apply_css_to_element(cJSON *element);
 
-    // Execute JS
-    execute_scripts((lxb_dom_node_t*)body);
+ void add_attribute_to_children(cJSON *root, const char *parent_tag, 
+    const char *attr_name, const char *attr_value, 
+    int mode);
+void mark_all_descendants(cJSON *element, const char *attr_name, 
+        const char *attr_value, int mode);
+        void load_and_render_page(const char *filename, const char *base_url) ;
+void adjust_child_positions(cJSON *children, int y_offset);
+void fix_media_link_alignment(cJSON *root);
+void cleanup_previous_page(pauk_ui_t *pauk_ui);
 
-    // Write JSON
-    write_json_to_file(output_file, root_json);
-    cJSON_Delete(root_json);
+const char* get_current_base_url(void);
+void set_current_base_url(const char *url);
 
-    free(html_content);
-    lxb_html_document_destroy(doc, true);
-
-    return 0;
-}
+void apply_js_modifications_to_dom(cJSON *root, cJSON *modifications);
+void refresh_page_after_js(pauk_ui_t *pauk_ui);
+char* get_directory_path(const char *filepath);
+#endif // MAIN_H
