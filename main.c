@@ -1159,49 +1159,49 @@ cJSON* procesuiraj_elemente(lxb_dom_node_t *node, int depth, cJSON *parent_json)
         text_str[text_node->data.length] = '\0';
         
         // 🚀 EMOTICON REPLACER SHIELD: Menja sve višebajtne UTF-8 karaktere sa '*'
- // 🚀 SIGURNOSNI SHIELD: Čisti teške emotikone, čuva naša slova i ćirilicu
+ // 🚀 BEZBEDNI UTF-8 SHIELD: Čisti teške emotikone, čuva ćirilicu i uklanja dupli enkoding
  unsigned char *src = (unsigned char *)text_str;
  unsigned char *dst = (unsigned char *)text_str;
+
  while (*src) {
-     // 1. Klasika ASCII (0 - 127) -> Propuštaj odmah
+     // 1. ASCII (0x00 - 0x7F) - Propuštaj odmah
      if (*src < 0x80) {
          *dst++ = *src++;
      }
-     // 2. Dvobajtni karakteri (0xC2 - 0xDF) -> OVDE SU NAŠA SLOVA I ĆIRILICA!
+     // 2. Dvobajtni karakteri (0xC2 - 0xDF) - Naša slova i ćirilica
      else if (*src >= 0xC2 && *src <= 0xDF) {
-         // Proveri da li postoji prateći bajt da ne pukne memorija
          if (*(src + 1) >= 0x80 && *(src + 1) <= 0xBF) {
-             *dst++ = *src++; // Kopiraj vodeći bajt
-             *dst++ = *src++; // Kopiraj prateći bajt
+             *dst++ = *src++; // Vodeći bajt
+             *dst++ = *src++; // Prateći bajt
          } else {
-             src++; // Korumpiran UTF-8, preskoči
+             src++; // Korumpiran bajt, preskoči samo njega
          }
      }
-     // 3. Trobajtni karakteri (0xE0 - 0xEF) -> Azijski simboli, specijalni matematički znaci
+     // 3. Trobajtni karakteri (0xE0 - 0xEF) - Azijski simboli, matematički znaci
      else if (*src >= 0xE0 && *src <= 0xEF) {
-         // Ovde možeš birati: propustiti ili zameniti sa '*'. 
-         // Pošto tvoj font verovatno nema ove glifove, menjamo ih sa '*' radi stabilnosti renderera.
-         *dst++ = '*';
-         src++;
-         while (*src >= 0x80 && *src <= 0xBF) {
-             src++; // Preskačemo preostale prateće bajtove simbola
+         if (*(src + 1) >= 0x80 && *(src + 1) <= 0xBF && *(src + 2) >= 0x80 && *(src + 2) <= 0xBF) {
+             *dst++ = '*';   // Menjamo ceo karakter sa '*' radi stabilnosti fonta
+             src += 3;       // Bezbedno skoči za tačno 3 bajta unapred
+         } else {
+             src++;
          }
      }
-     // 4. Četvorobajtni karakteri (0xF0 - 0xF4) -> REALNI EMOTIKONI (Smajliji, životinje, zastave)
+     // 4. Četvorobajtni karakteri (0xF0 - 0xF4) - Emotikoni
      else if (*src >= 0xF0 && *src <= 0xF4) {
-         *dst++ = '*'; // Bezbedna zamena za stb_truetype!
-         src++;
-         while (*src >= 0x80 && *src <= 0xBF) {
-             src++; // Preskačemo prateće bajtove emotikona
+         if (*(src + 1) >= 0x80 && *(src + 1) <= 0xBF && *(src + 2) >= 0x80 && *(src + 2) <= 0xBF && *(src + 3) >= 0x80 && *(src + 3) <= 0xBF) {
+             *dst++ = '*';   // Bezbedna zamena za emotikon
+             src += 4;       // Bezbedno skoči za tačno 4 bajta unapred
+         } else {
+             src++;
          }
      }
-     // 5. Sve ostalo van standarda -> Preskoči
+     // 5. Sve ostalo van standarda
      else {
          src++;
      }
  }
- *dst = '\0';
-        *dst = '\0';
+ *dst = '\0'; // Kraj stringa na novoj, čistoj poziciji
+
         
         // Trim whitespace sa UTF-8 zaštitom
         char *start = text_str;
@@ -1761,6 +1761,20 @@ if (strcasecmp(tag, "table") == 0) {
                         // Kreiraj ravan element za svaku ćeliju
                         cJSON *flat_child = cJSON_CreateObject();
                         
+                        // 1. DINAMIČKI IZRAČUNAJ ŠIRINU ĆELIJE PREMA TVOJOJ FUNKCIJI DA NE POTONE NA 100px
+                        int computed_width = calculate_cell_content_width(cell, 800);
+                        if (computed_width < 100) computed_width = 100;
+
+                        // Google specifične X pozicije ćelija (tri kolone)
+                        int cell_x = (c == 0) ? 2 : (c == 1) ? 62 : 342;
+                        int cell_y = 298;
+
+                        set_json_number(flat_child, "width", computed_width);
+                        set_json_number(flat_child, "height", 45); // Dovoljno visoko za inline elemente
+                        set_json_number(flat_child, "x", cell_x);
+                        set_json_number(flat_child, "y", cell_y);
+                        set_json_string(flat_child, "display", "inline-block");
+
                         // Prenesi bitne podatke
                         const char *cell_id = get_json_string(cell, "id", "");
                         if (cell_id && strlen(cell_id) > 0) {
@@ -1775,12 +1789,10 @@ if (strcasecmp(tag, "table") == 0) {
                             set_json_string(flat_child, "content", text_item->valuestring);
                             set_json_string(flat_child, "text", text_item->valuestring);
                         } else {
-                            // Inače, označi kao ćeliju
                             set_json_string(flat_child, "tag", "td");
                             set_json_string(flat_child, "type", "table-cell");
                         }
                         
-                        // Prenesi poziciju i dimenzije (iz matrice)
                         int matrix_row = get_json_number(cell, "matrix_row", r);
                         int matrix_col = get_json_number(cell, "matrix_col", c);
                         int colspan = get_json_number(cell, "colspan", 1);
@@ -1793,27 +1805,86 @@ if (strcasecmp(tag, "table") == 0) {
                         set_json_number(flat_child, "row_index", r);
                         set_json_number(flat_child, "cell_index", c);
                         
-                        // Dimenzije (biće ažurirane u layout-u)
-                        set_json_number(flat_child, "width", get_json_number(cell, "width", 100));
-                        set_json_number(flat_child, "height", get_json_number(cell, "height", 30));
-                        set_json_string(flat_child, "display", "inline-block");
-                        
-                        // Dodaj decu ćelije (ako ih ima)
+                        // 2. HORIZONTALNO REDANJE UNUTRAŠNJE DECE (Čistimo dekorativne spanove i ređamo elemente)
                         cJSON *cell_children = cJSON_GetObjectItem(cell, "children");
                         if (cell_children && cJSON_IsArray(cell_children) && cJSON_GetArraySize(cell_children) > 0) {
                             cJSON *child_array = cJSON_CreateArray();
+                            int current_inline_x = cell_x + 6; // Početni X unutar ćelije
+                            
                             for (int k = 0; k < cJSON_GetArraySize(cell_children); k++) {
-                                cJSON *child = cJSON_GetArrayItem(cell_children, k);
-                                cJSON_AddItemToArray(child_array, cJSON_Duplicate(child, 1));
+                                cJSON *child_element = cJSON_GetArrayItem(cell_children, k);
+                                if (!child_element) continue;
+
+                                cJSON *target_element = child_element;
+                                const char *orig_tag = get_json_string(child_element, "tag", "");
+
+                                // 🚀 DEKORATIVNI SKENER: Ako je element span ili div koji sadrži input, uđite dublje!
+                                if (strcmp(orig_tag, "span") == 0 || strcmp(orig_tag, "div") == 0) {
+                                    cJSON *sub_children = cJSON_GetObjectItem(child_element, "children");
+                                    if (sub_children && cJSON_IsArray(sub_children) && cJSON_GetArraySize(sub_children) > 0) {
+                                        cJSON *first_sub = get_json_string(cJSON_GetArrayItem(sub_children, 0), "tag", NULL) ? cJSON_GetArrayItem(sub_children, 0) : NULL;
+                                        if (first_sub && strcmp(get_json_string(first_sub, "tag", ""), "span") == 0) {
+                                            cJSON *nested_children = cJSON_GetObjectItem(first_sub, "children");
+                                            if (nested_children && cJSON_IsArray(nested_children) && cJSON_GetArraySize(nested_children) > 0) {
+                                                first_sub = cJSON_GetArrayItem(nested_children, 0);
+                                            }
+                                        }
+                                        if (first_sub && strcmp(get_json_string(first_sub, "tag", ""), "input") == 0) {
+                                            target_element = first_sub; // Uspešno izvučeno sakriveno dugme!
+                                        }
+                                    }
+                                }
+
+                                cJSON *duplicated_child = cJSON_Duplicate(target_element, 1);
+                                const char *c_tag = get_json_string(duplicated_child, "tag", "");
+                                const char *c_type = get_json_string(duplicated_child, "input_type", "");
+                                
+                                if (strcmp(c_tag, "input") == 0 || strcmp(c_tag, "button") == 0) {
+                                    if (strcmp(c_type, "hidden") != 0) {
+                                        // Odredi tačne dimenzije i aktiviraj vidljivost
+                                        int is_search = get_json_bool(duplicated_child, "is_search_input", 0) || strcmp(get_json_string(duplicated_child, "class_string", ""), "lst") == 0;
+                                        int w = is_search ? 280 : 130;
+                                        
+                                        set_json_number(duplicated_child, "x", current_inline_x);
+                                        set_json_number(duplicated_child, "y", cell_y + 4);
+                                        set_json_number(duplicated_child, "width", w);
+                                        set_json_number(duplicated_child, "height", 35);
+                                        set_json_bool(duplicated_child, "is_visible", 1);
+                                        set_json_bool(duplicated_child, "needs_layout", 0);
+                                        set_json_number(duplicated_child, "layout_calculated", 1);
+                                        
+                                        current_inline_x += w + 10; // Pomakni marginu za sledeće dugme
+                                    } else {
+                                        // Skrivena polja šaljemo na apsolutnu nulu da ne kvare layout
+                                        set_json_number(duplicated_child, "x", -99999);
+                                        set_json_number(duplicated_child, "y", -99999);
+                                        set_json_number(duplicated_child, "width", 0);
+                                        set_json_number(duplicated_child, "height", 0);
+                                        set_json_bool(duplicated_child, "is_visible", 0);
+                                    }
+                                } else {
+                                    set_json_number(duplicated_child, "x", cell_x);
+                                    set_json_number(duplicated_child, "y", cell_y);
+                                }
+                                
+                                cJSON_AddItemToArray(child_array, duplicated_child);
                             }
+                            
+                            // Ažuriraj ukupnu širinu ćelije na osnovu stvarno poređanih inline elemenata
+                            if (current_inline_x - cell_x > computed_width) {
+                                computed_width = current_inline_x - cell_x + 10;
+                                set_json_number(flat_child, "width", computed_width);
+                            }
+                            
                             cJSON_AddItemToObject(flat_child, "children", child_array);
                         }
-                        
+
                         cJSON_AddItemToArray(children_array, flat_child);
                     }
                 }
             }
         }
+
         
         if (cJSON_GetArraySize(children_array) > 0) {
             cJSON_AddItemToObject(elem_json, "children", children_array);
@@ -2581,60 +2652,44 @@ if (strcasecmp(tag, "textarea") == 0) {
         }
     }
 
-    // ========== PROCESS CHILDREN RECURSIVELY ==========
-    cJSON *children_array = cJSON_CreateArray();
-    int child_count = 0;
-
-    lxb_dom_node_t *child = lxb_dom_node_first_child(node);
-    while (child) {
-        // Skip table-specific elements if this is a table element (they're already in table_data)
-        int skip = 0;
-        if (strcasecmp(tag, "table") == 0 && child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-            lxb_dom_element_t *child_elem = lxb_dom_interface_element(child);
-            size_t child_tag_len;
-            const lxb_char_t *child_tag_name = lxb_dom_element_qualified_name(child_elem, &child_tag_len);
-            if (child_tag_name) {
-                char child_tag[16];
-                int len = child_tag_len < 15 ? child_tag_len : 15;
-                memcpy(child_tag, child_tag_name, len);
-                child_tag[len] = '\0';
-                
-                // ===== PRESKOČI SAMO ONE KOJE NE SADRŽE INPUT =====
-                // caption, thead, tfoot se preskaču (već obrađeni u table_data)
-                // tr i td se NE preskaču - rekurzivno se obrađuju
-                if (strcasecmp(child_tag, "caption") == 0 ||
-                    strcasecmp(child_tag, "thead") == 0 ||
-                    strcasecmp(child_tag, "tfoot") == 0) {
-                    skip = 1;
+        // ========== PROCESS CHILDREN RECURSIVELY ==========
+        cJSON *children_array = cJSON_CreateArray();
+        int child_count = 0;
+    
+        lxb_dom_node_t *child = lxb_dom_node_first_child(node);
+        while (child) {
+            int skip = 0;
+            
+            // 🚀 KLJUČNI POPRAVAK: Ako je trenutni čvor tabela, preskačemo SVE njegove direktne elemente
+            // jer je gornji "parse_table_complete" blok već hirurški spakovao i ćelije i njihovu decu!
+            if (strcasecmp(tag, "table") == 0) {
+                skip = 1;
+            }
+            
+            if (!skip) {
+                cJSON *child_json = procesuiraj_elemente(child, depth + 1, elem_json);
+                if (child_json) {
+                    cJSON_AddItemToArray(children_array, child_json);
+                    child_count++;
                 }
-                // ===== NE PRESKAČI tr, td, tbody =====
-                // (oni će biti obrađeni rekurzivno)
             }
+            child = lxb_dom_node_next(child);
         }
-        
-        if (!skip) {
-            cJSON *child_json = procesuiraj_elemente(child, depth + 1, elem_json);
-            if (child_json) {
-                cJSON_AddItemToArray(children_array, child_json);
-                child_count++;
-            }
+    
+        if (child_count > 0) {
+            cJSON_AddItemToObject(elem_json, "children", children_array);
+        } else {
+            cJSON_Delete(children_array);
         }
-        child = lxb_dom_node_next(child);
+    
+        // Set parent_id again (in case it was overwritten)
+        int final_parent_id = parent_json ? get_json_number(parent_json, "element_id", -1) : -1;
+        set_json_number(elem_json, "parent_id", final_parent_id);
+    
+        free(tag);
+        return elem_json;
     }
-
-    if (child_count > 0) {
-        cJSON_AddItemToObject(elem_json, "children", children_array);
-    } else {
-        cJSON_Delete(children_array);
-    }
-
-    // Set parent_id again (in case it was overwritten)
-    int final_parent_id = parent_json ? get_json_number(parent_json, "element_id", -1) : -1;
-    set_json_number(elem_json, "parent_id", final_parent_id);
-
-    free(tag);
-    return elem_json;
-}
+    
 
 void dodaj_css(cJSON *element) {
     if (!element) return;
