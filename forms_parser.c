@@ -121,13 +121,15 @@ void init_input_element(cJSON *input_json, lxb_dom_element_t *elem) {
     
     // Vizuelno prilagođavanje dugmadi u odnosu na običan input tekst boks
     if (strcmp(type, "submit") == 0 || strcmp(type, "button") == 0) {
-        set_json_string(input_json, "border_color", "#f8f9fa");
+        set_json_string(input_json, "border_color", "#70757a");  // Tamno siva - VIDLJIVO
+        set_json_number(input_json, "border_width", 1);
         set_json_number(input_json, "border_radius", 4);
-        set_json_string(input_json, "bg_color", "#f8f9fa"); // Prepoznatljiva siva Google dugmad
+        set_json_string(input_json, "bg_color", "#f8f9fa");  // Svetlo siva pozadina
     } else {
-        set_json_string(input_json, "border_color", "#cccccc");
+        set_json_string(input_json, "border_color", "#70757a");  // Tamno siva - VIDLJIVO
+        set_json_number(input_json, "border_width", 1);
         set_json_number(input_json, "border_radius", 4);
-        set_json_string(input_json, "bg_color", "#ffffff");
+        set_json_string(input_json, "bg_color", "#ffffff");  // Bela pozadina
     }
     
     // ===== OBRADA ATRIBUTA =====
