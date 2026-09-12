@@ -1525,64 +1525,17 @@ errno_t fetch_css_resource(const char *url, char **content, size_t *size) {
         }
     }
 
-    // ===== SADA ODREDI PROTOKOL I PORT NA OSNOVU OČIŠĆENOG URL-A =====
+    // ===== SADA ODREDI PROTOKOL I SKINI PREKO KEEP-ALIVE KONEKCIJE =====
     int is_https = (strstr(working_url, "https://") != NULL);
-    uint16_t port = is_https ? 443 : 80;
+    errno_t rc;
 
-    // Izvačenje hostname-a iz OČIŠĆENOG URL-A
-    char hostname[256];
-    const char *host_start = strstr(working_url, "://");
-    if (host_start) {
-        host_start += 3;
-        const char *host_end = strchr(host_start, '/');
-        int len = host_end ? (host_end - host_start) : (int)strlen(host_start);
-        if (len > 255) len = 255;
-        strncpy(hostname, host_start, len);
-        hostname[len] = '\0';
-
-        // Proveri da li hostname ima port
-        char *port_ptr = strchr(hostname, ':');
-        if (port_ptr) {
-            *port_ptr = '\0';
-            port = (uint16_t)strtoul(port_ptr + 1, NULL, 10);
-            is_https = (port == 443);
-        }
-    } else {
-        printf("❌ fetch_css_resource: Nevalidan URL format\n");
-        if (clean_url) free(clean_url);
-        return EINVAL;
-    }
-
-    // Resolving host and creating connection
-    inet_addr_t addr;
-    errno_t rc = resolve_host(hostname, &addr);
-    if (rc != EOK) {
-        printf("❌ fetch_css_resource: Resolving failed: %s\n", hostname);
-        if (clean_url) free(clean_url);
-        return rc;
-    }
-
-    tcp_t *tcp = NULL;
-    tcp_conn_t *conn = NULL;
-    rc = create_tcp_connection(addr, port, &tcp, &conn);
-    if (rc != EOK) {
-        printf("❌ fetch_css_resource: Connection failed to %s:%d\n", hostname, port);
-        if (clean_url) free(clean_url);
-        return rc;
-    }
-
-    // Poziv sa OČIŠĆENIM URL-om
     if (is_https) {
-        rc = fetch_https_content(working_url, conn, content, size, 0);
+        rc = fetch_https_content_keep_alive(working_url, content, size);
     } else {
-        rc = fetch_http_content(working_url, conn, content, size, 0);
+        rc = fetch_http_content_keep_alive(working_url, content, size);
     }
 
-    // Čišćenje
     if (clean_url) free(clean_url);
-    tcp_conn_destroy(conn);
-    tcp_destroy(tcp);
-
     return rc;
 }
 
@@ -1832,18 +1785,170 @@ errno_t fetch_https_content_keep_alive(const char *url,
     }
 
     const char *path = extract_path(url);
+    if (!path || path[0] == '\0') {
+        path = "/";
+    }
+
+    int problematican_sajt_id = 0;
+    if (strstr(hostname, "google.") != NULL) {
+        if (strstr(url, "/search?") != NULL || strstr(path, "/search") != NULL) {
+            problematican_sajt_id = 5; // Google Search
+        } else {
+            problematican_sajt_id = 1; // Google Homepage
+        }
+    } else if (strstr(hostname, "duckduckgo.") != NULL) {
+        if (strchr(url, '?') != NULL || strchr(path, '?') != NULL) {
+            problematican_sajt_id = 6; // DuckDuckGo Search
+        } else {
+            problematican_sajt_id = 2; // DuckDuckGo Homepage
+        }
+    } else if (strstr(hostname, "yahoo.") != NULL) {
+        problematican_sajt_id = 3; // Yahoo
+    } else if (strstr(hostname, "bing.") != NULL) {
+        problematican_sajt_id = 4; // Bing
+    } else if (strstr(hostname, "mojeek.") != NULL) {
+        problematican_sajt_id = 7; // Mojeek
+    }
 
     char request[2048];
 
-    snprintf(request,
-             sizeof(request),
-             "GET %s HTTP/1.1\r\n"
-             "Host: %s\r\n"
-             "Connection: keep-alive\r\n"
-             "User-Agent: PaukBrowser/1.0\r\n"
-             "\r\n",
-             path,
-             hostname);
+    switch (problematican_sajt_id) {
+        case 1: {
+            // Google Homepage - Classic Lynx UA gives clean static HTML with Google Logo image
+            const char *ua = "Pauk1.0.0rel.1 libwww-FM/2.14 SSL-MM/1.4.1";
+            snprintf(request, sizeof(request),
+                "GET %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "User-Agent: %s\r\n"
+                "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
+                "Accept-Language: en-US,en;q=0.9,sr;q=0.5\r\n"
+                "Accept-Encoding: identity\r\n"
+                "Referer: https://google.com\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n",
+                path, hostname, ua);
+            break;
+        }
+        case 2: {
+            // DuckDuckGo Homepage
+            const char *ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+            char goli_ddg[256];
+            strcpy(goli_ddg, hostname);
+            if (strncasecmp(hostname, "www.", 4) == 0) {
+                strcpy(goli_ddg, hostname + 4);
+            }
+            snprintf(request, sizeof(request),
+                "GET %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "User-Agent: %s\r\n"
+                "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
+                "Accept-Language: en-US,en;q=0.9,sr;q=0.5\r\n"
+                "Accept-Encoding: identity\r\n"
+                "Referer: https://duckduckgo.com\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n",
+                path, goli_ddg, ua);
+            break;
+        }
+        case 3: {
+            // Yahoo Homepage
+            const char *ua = "Pauk1.0.0rel.1 libwww-FM/2.14 SSL-MM/1.4.1";
+            snprintf(request, sizeof(request),
+                "GET %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "User-Agent: %s\r\n"
+                "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
+                "Accept-Language: en-US,en;q=0.9,sr;q=0.5\r\n"
+                "Accept-Encoding: identity\r\n"
+                "Referer: https://yahoo.com\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n",
+                path, hostname, ua);
+            break;
+        }
+        case 4: {
+            // Bing
+            const char *ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+            const char *bing_safe_host = "://bing.com";
+            snprintf(request, sizeof(request),
+                "GET %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "User-Agent: %s\r\n"
+                "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
+                "Accept-Language: en-US,en;q=0.9,sr;q=0.5\r\n"
+                "Accept-Encoding: identity\r\n"
+                "Referer: https://bing.com\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n",
+                path, bing_safe_host, ua);
+            break;
+        }
+        case 5: {
+            // Google Search Results
+            const char *ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+            snprintf(request, sizeof(request),
+                "GET %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "Connection: keep-alive\r\n"
+                "Upgrade-Insecure-Requests: 1\r\n"
+                "User-Agent: %s\r\n"
+                "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8\r\n"
+                "Accept-Language: en-US,en;q=0.9,sr;q=0.5\r\n"
+                "Accept-Encoding: gzip, deflate\r\n"
+                "Referer: https://www.google.com/\r\n"
+                "\r\n",
+                path, hostname, ua);
+            break;
+        }
+        case 6: {
+            // DuckDuckGo Search Results
+            const char *ua_desktop = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+            snprintf(request, sizeof(request),
+                "GET %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "User-Agent: %s\r\n"
+                "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
+                "Accept-Language: en-US,en;q=0.5\r\n"
+                "Accept-Encoding: identity\r\n"
+                "Referer: https://duckduckgo.com/\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n",
+                path, hostname, ua_desktop);
+            break;
+        }
+        case 7: {
+            // Mojeek
+            const char *ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+            snprintf(request, sizeof(request),
+                "GET %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "User-Agent: %s\r\n"
+                "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8\r\n"
+                "Accept-Language: en-US,en;q=0.9\r\n"
+                "Accept-Encoding: gzip, deflate\r\n"
+                "Upgrade-Insecure-Requests: 1\r\n"
+                "Referer: https://mojeek.com/\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n",
+                path, hostname, ua);
+            break;
+        }
+        default: {
+            const char *ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+            snprintf(request, sizeof(request),
+                "GET %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "User-Agent: %s\r\n"
+                "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8\r\n"
+                "Accept-Language: en-US,en;q=0.9\r\n"
+                "Accept-Encoding: gzip, deflate\r\n"
+                "Referer: https://%s/\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n",
+                path, hostname, ua, hostname);
+            break;
+        }
+    }
 
     rc = tls_send(g_keepalive_tls,
                   request,
@@ -1873,12 +1978,10 @@ errno_t fetch_https_content_keep_alive(const char *url,
     size_t body_start = 0;
 
     int content_length = -1;
-    int is_chunked = 0;  // NEW
+    int is_chunked = 0;
 
     uint64_t last_progress = get_uptime_ms();
     uint64_t download_start = last_progress;
-
-  //  printf("📥 Downloading: %s\n", url);
 
     while (1) {
 
@@ -1908,10 +2011,6 @@ errno_t fetch_https_content_keep_alive(const char *url,
                     }
 
                     buffer = new_buffer;
-
-                    printf("📦 Buffer expanded to %.2f MB\n",
-                           buffer_size /
-                           (1024.0 * 1024.0));
                 }
 
                 memcpy(buffer + total_size,
@@ -1939,33 +2038,23 @@ errno_t fetch_https_content_keep_alive(const char *url,
                         if (cl) {
 
                             content_length = atoi(cl);
-
-                            printf("📋 Content-Length: %d bytes (%.2f KB)\n",
-                                   content_length,
-                                   content_length / 1024.0);
-
                             free(cl);
                         }
                         
-                        // NEW: Check for chunked encoding
                         char *te = extract_header_value(buffer, "Transfer-Encoding");
                         if (te) {
                             if (strstr(te, "chunked")) {
                                 is_chunked = 1;
-                                printf("📦 Transfer-Encoding: chunked\n");
                             }
                             free(te);
                         }
                     }
                 }
 
-                // NEW: For chunked encoding, check for termination
                 if (headers_processed && is_chunked) {
-                    // Look for "0\r\n\r\n" at the end
                     if (total_size >= body_start + 5) {
                         char *end_check = buffer + total_size - 5;
                         if (memcmp(end_check, "0\r\n\r\n", 5) == 0) {
-                            printf("✅ Chunked download complete\n");
                             break;
                         }
                     }
@@ -1976,34 +2065,13 @@ errno_t fetch_https_content_keep_alive(const char *url,
                     size_t received =
                         total_size - body_start;
 
-                    if ((received % (100 * 1024)) < nread ||
-                        received >= (size_t)content_length)
+                    if (received >= (size_t)content_length)
                     {
-                        printf("📥 Progress: %.2f KB / %.2f KB (%.1f%%)\n",
-                               received / 1024.0,
-                               content_length / 1024.0,
-                               (received * 100.0) /
-                               content_length);
-                    }
-
-                    if (received >=
-                        (size_t)content_length)
-                    {
-                        printf("✅ Download complete: %zu bytes\n",
-                               received);
-
                         break;
                     }
                 }
 
             } else {
-
-                printf("📥 Server closed connection\n");
-                // For chunked encoding, server close means complete
-                if (is_chunked && headers_processed) {
-                    printf("✅ Server closed after chunked transfer\n");
-                    break;
-                }
                 break;
             }
 
@@ -2012,30 +2080,11 @@ errno_t fetch_https_content_keep_alive(const char *url,
             uint64_t now = get_uptime_ms();
 
             if ((now - last_progress) > 30000) {
-
-                size_t received =
-                    headers_processed ?
-                    (total_size - body_start) : 0;
-
-                printf("❌ Download stalled\n");
-
-                if (content_length > 0) {
-
-                    printf("❌ Received %zu / %d bytes (%.1f%%)\n",
-                           received,
-                           content_length,
-                           (received * 100.0) /
-                           content_length);
-                }
-
                 free(buffer);
                 return ETIMEOUT;
             }
 
             if ((now - download_start) > 300000) {
-
-                printf("❌ Download exceeded 5 minutes\n");
-
                 free(buffer);
                 return ETIMEOUT;
             }
@@ -2044,35 +2093,25 @@ errno_t fetch_https_content_keep_alive(const char *url,
             continue;
 
         } else {
-
-            printf("❌ Receive error: %s\n",
-                   str_error(rc));
-
             free(buffer);
             return rc;
         }
     }
 
     if (!headers_processed || body_start >= total_size) {
-
-        printf("❌ No response body\n");
-
         free(buffer);
-
         return EIO;
     }
 
     size_t body_size = total_size - body_start;
     char *body_data = buffer + body_start;
     
-    // NEW: For JPEG images, verify EOI marker
+    // For JPEG images, verify EOI marker
     const char *ext = strrchr(url, '.');
     if (ext && (strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".jpeg") == 0)) {
         if (body_size > 2) {
             unsigned char *last_two = (unsigned char*)body_data + body_size - 2;
-            if (last_two[0] == 0xFF && last_two[1] == 0xD9) {
-                printf("✅ JPEG EOI marker verified\n");
-            } else {
+            if (last_two[0] != 0xFF || last_two[1] != 0xD9) {
                 printf("⚠️ JPEG missing EOI marker - file incomplete!\n");
                 free(buffer);
                 return EIO;
@@ -2080,16 +2119,11 @@ errno_t fetch_https_content_keep_alive(const char *url,
         }
     }
 
-    // NEW: reject incomplete download for non-chunked
+    // Reject incomplete download for non-chunked
     if (!is_chunked && content_length > 0 &&
         body_size < (size_t)content_length)
     {
-        printf("❌ Incomplete download (%zu/%d)\n",
-               body_size,
-               content_length);
-
         free(buffer);
-
         return EIO;
     }
 
@@ -2101,14 +2135,11 @@ errno_t fetch_https_content_keep_alive(const char *url,
             free(buffer);
             buffer = decoded;
             body_size = decoded_size;
-            printf("✅ Decoded chunked data: %zu bytes\n", body_size);
         } else {
-            printf("❌ Failed to decode chunked data\n");
             free(buffer);
             return EIO;
         }
     } else {
-        // Just copy the body
         char *new_buffer = malloc(body_size + 1);
         if (!new_buffer) {
             free(buffer);
@@ -2120,10 +2151,85 @@ errno_t fetch_https_content_keep_alive(const char *url,
         buffer = new_buffer;
     }
 
+    // ===== GZIP / ZLIB DECOMPRESSION =====
+    if (body_size >= 2) {
+        unsigned char *compressed_data = (unsigned char*)buffer;
+        int is_gzip = (body_size >= 2 && compressed_data[0] == 0x1F && compressed_data[1] == 0x8B);
+        int is_zlib = (body_size >= 2 && compressed_data[0] == 0x78 && 
+                       (compressed_data[1] == 0x01 || compressed_data[1] == 0x5E || 
+                        compressed_data[1] == 0x9C || compressed_data[1] == 0xDA));
+        
+        if (is_gzip) {
+            size_t header_size = 10;
+            if (body_size > 10) {
+                unsigned char flags = compressed_data[3];
+                if (flags & 0x04) {
+                    if (body_size > header_size + 1) {
+                        size_t extra_len = compressed_data[header_size] | (compressed_data[header_size+1] << 8);
+                        header_size += 2 + extra_len;
+                    }
+                }
+                if (flags & 0x08) {
+                    while (header_size < body_size && compressed_data[header_size] != 0) header_size++;
+                    header_size++;
+                }
+                if (flags & 0x10) {
+                    while (header_size < body_size && compressed_data[header_size] != 0) header_size++;
+                    header_size++;
+                }
+                if (flags & 0x02) header_size += 2;
+            }
+            if (header_size < body_size) {
+                size_t out_max = 2 * 1024 * 1024;
+                unsigned char *out_buf = malloc(out_max);
+                if (out_buf) {
+                    size_t out_buf_remaining = out_max;
+                    const unsigned char *pIn_buf_next = compressed_data + header_size;
+                    size_t in_buf_remaining = body_size - header_size;
+                    tinfl_decompressor decomp;
+                    tinfl_init(&decomp);
+                    tinfl_status status = tinfl_decompress(&decomp, pIn_buf_next, &in_buf_remaining,
+                                                           out_buf, out_buf, &out_buf_remaining, 0);
+                    if (status == TINFL_STATUS_DONE) {
+                        size_t decomp_size = out_max - out_buf_remaining;
+                        if (decomp_size > 8) decomp_size -= 8;
+                        char *decomp_res = malloc(decomp_size + 1);
+                        if (decomp_res) {
+                            memcpy(decomp_res, out_buf, decomp_size);
+                            decomp_res[decomp_size] = '\0';
+                            free(buffer);
+                            buffer = decomp_res;
+                            body_size = decomp_size;
+                            printf("✅ Keep-Alive GZIP decompression successful: %zu bytes\n", body_size);
+                        }
+                    }
+                    free(out_buf);
+                }
+            }
+        } else if (is_zlib) {
+            unsigned long decompressed_size = body_size * 4;
+            if (decompressed_size < 65536) decompressed_size = 65536;
+            unsigned char *decompressed = malloc(decompressed_size);
+            if (decompressed) {
+                int ret = uncompress(decompressed, &decompressed_size, compressed_data, body_size);
+                if (ret == Z_OK) {
+                    char *decomp_res = malloc(decompressed_size + 1);
+                    if (decomp_res) {
+                        memcpy(decomp_res, decompressed, decompressed_size);
+                        decomp_res[decompressed_size] = '\0';
+                        free(buffer);
+                        buffer = decomp_res;
+                        body_size = decompressed_size;
+                        printf("✅ Keep-Alive ZLIB decompression successful: %zu bytes\n", body_size);
+                    }
+                }
+                free(decompressed);
+            }
+        }
+    }
+
     *content = buffer;
     *content_size = body_size;
-
-    printf("✅ Extracted body: %zu bytes\n", body_size);
 
     return EOK;
 }
@@ -2158,23 +2264,199 @@ errno_t fetch_http_content_keep_alive(const char *url, char **content, size_t *c
         printf("♻️ Reusing HTTP keep-alive connection to %s\n", hostname);
     }
     
-    // Send HTTP request (same as HTTPS version but without TLS)
     const char *path = extract_path(url);
+    if (!path || path[0] == '\0') {
+        path = "/";
+    }
+
+    int problematican_sajt_id = 0;
+    if (strstr(hostname, "google.") != NULL) {
+        if (strstr(url, "/search?") != NULL || strstr(path, "/search") != NULL) {
+            problematican_sajt_id = 5;
+        } else {
+            problematican_sajt_id = 1;
+        }
+    } else if (strstr(hostname, "duckduckgo.") != NULL) {
+        if (strchr(url, '?') != NULL || strchr(path, '?') != NULL) {
+            problematican_sajt_id = 6;
+        } else {
+            problematican_sajt_id = 2;
+        }
+    } else if (strstr(hostname, "yahoo.") != NULL) {
+        problematican_sajt_id = 3;
+    } else if (strstr(hostname, "bing.") != NULL) {
+        problematican_sajt_id = 4;
+    } else if (strstr(hostname, "mojeek.") != NULL) {
+        problematican_sajt_id = 7;
+    }
+
     char request[2048];
-    snprintf(request, sizeof(request),
-        "GET %s HTTP/1.1\r\n"
-        "Host: %s\r\n"
-        "Connection: keep-alive\r\n"
-        "User-Agent: PaukBrowser/1.0\r\n"
-        "\r\n",
-        path, hostname);
+
+    switch (problematican_sajt_id) {
+        case 1: {
+            const char *ua = "Pauk1.0.0rel.1 libwww-FM/2.14 SSL-MM/1.4.1";
+            snprintf(request, sizeof(request),
+                "GET %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "User-Agent: %s\r\n"
+                "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
+                "Accept-Language: en-US,en;q=0.9,sr;q=0.5\r\n"
+                "Accept-Encoding: identity\r\n"
+                "Referer: https://google.com\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n",
+                path, hostname, ua);
+            break;
+        }
+        case 3: {
+            const char *ua = "Pauk1.0.0rel.1 libwww-FM/2.14 SSL-MM/1.4.1";
+            snprintf(request, sizeof(request),
+                "GET %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "User-Agent: %s\r\n"
+                "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
+                "Accept-Language: en-US,en;q=0.9,sr;q=0.5\r\n"
+                "Accept-Encoding: identity\r\n"
+                "Referer: https://yahoo.com\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n",
+                path, hostname, ua);
+            break;
+        }
+        default: {
+            const char *ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+            snprintf(request, sizeof(request),
+                "GET %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "User-Agent: %s\r\n"
+                "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
+                "Accept-Language: en-US,en;q=0.9\r\n"
+                "Accept-Encoding: gzip, deflate\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n",
+                path, hostname, ua);
+            break;
+        }
+    }
     
     rc = tcp_conn_send(g_http_keepalive_conn, request, strlen(request));
-    if (rc != EOK) return rc;
+    if (rc != EOK) {
+        if (g_http_keepalive_conn) {
+            tcp_conn_destroy(g_http_keepalive_conn);
+            g_http_keepalive_conn = NULL;
+        }
+        return rc;
+    }
     
-    // Receive response (same as HTTPS version but without TLS)
-    // ... (similar receive loop)
+    size_t total_size = 0;
+    size_t buffer_size = 65536;
+    char *buffer = malloc(buffer_size);
+    if (!buffer) return ENOMEM;
     
+    char read_buffer[16384];
+    size_t nread = 0;
+    int headers_processed = 0;
+    size_t body_start = 0;
+    int content_length = -1;
+    int is_chunked = 0;
+    uint64_t last_progress = get_uptime_ms();
+    
+    while (1) {
+        rc = tcp_conn_recv(g_http_keepalive_conn, read_buffer, sizeof(read_buffer), &nread);
+        if (rc == EOK) {
+            if (nread > 0) {
+                last_progress = get_uptime_ms();
+                if (total_size + nread >= buffer_size) {
+                    while (total_size + nread >= buffer_size) buffer_size *= 2;
+                    char *new_buffer = realloc(buffer, buffer_size);
+                    if (!new_buffer) {
+                        free(buffer);
+                        return ENOMEM;
+                    }
+                    buffer = new_buffer;
+                }
+                memcpy(buffer + total_size, read_buffer, nread);
+                total_size += nread;
+                
+                if (!headers_processed) {
+                    int end = find_end_of_headers(buffer, total_size);
+                    if (end != -1) {
+                        headers_processed = 1;
+                        body_start = end;
+                        char *cl = extract_header_value(buffer, "Content-Length");
+                        if (cl) {
+                            content_length = atoi(cl);
+                            free(cl);
+                        }
+                        char *te = extract_header_value(buffer, "Transfer-Encoding");
+                        if (te) {
+                            if (strstr(te, "chunked")) is_chunked = 1;
+                            free(te);
+                        }
+                    }
+                }
+                
+                if (headers_processed && is_chunked) {
+                    if (total_size >= body_start + 5) {
+                        char *end_check = buffer + total_size - 5;
+                        if (memcmp(end_check, "0\r\n\r\n", 5) == 0) break;
+                    }
+                }
+                
+                if (headers_processed && !is_chunked && content_length > 0) {
+                    size_t received = total_size - body_start;
+                    if (received >= (size_t)content_length) break;
+                }
+            } else {
+                break;
+            }
+        } else if (rc == EAGAIN) {
+            uint64_t now = get_uptime_ms();
+            if ((now - last_progress) > 30000) {
+                free(buffer);
+                return ETIMEOUT;
+            }
+            fibril_usleep(10000);
+            continue;
+        } else {
+            free(buffer);
+            return rc;
+        }
+    }
+    
+    if (!headers_processed || body_start >= total_size) {
+        free(buffer);
+        return EIO;
+    }
+    
+    size_t body_size = total_size - body_start;
+    char *body_data = buffer + body_start;
+    
+    if (is_chunked) {
+        size_t decoded_size = 0;
+        char *decoded = decode_chunked_data(body_data, body_size, &decoded_size);
+        if (decoded) {
+            free(buffer);
+            buffer = decoded;
+            body_size = decoded_size;
+        } else {
+            free(buffer);
+            return EIO;
+        }
+    } else {
+        char *new_buffer = malloc(body_size + 1);
+        if (!new_buffer) {
+            free(buffer);
+            return ENOMEM;
+        }
+        memcpy(new_buffer, body_data, body_size);
+        new_buffer[body_size] = '\0';
+        free(buffer);
+        buffer = new_buffer;
+    }
+    
+    *content = buffer;
+    *content_size = body_size;
     return EOK;
 }
 
