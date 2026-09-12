@@ -173,13 +173,23 @@ void set_json_string(cJSON *obj, const char *key, const char *val) {
     }
 }
 
-// ne radi za bool true/false
 int get_json_number(cJSON *obj, const char *key, int default_value) {
     if (!obj) return default_value;
     
     cJSON *item = cJSON_GetObjectItem(obj, key);
-    if (item && cJSON_IsNumber(item)) {
+    if (!item) return default_value;
+    if (cJSON_IsNumber(item)) {
         return item->valueint;
+    }
+    if (cJSON_IsString(item) && item->valuestring) {
+        if (strcasecmp(item->valuestring, "auto") == 0) {
+            return default_value;
+        }
+        char *endptr = NULL;
+        long val = strtol(item->valuestring, &endptr, 10);
+        if (endptr != item->valuestring) {
+            return (int)val;
+        }
     }
     return default_value;
 }
@@ -414,12 +424,13 @@ int margin_right  = get_json_number(element, "margin_right", 0);
 
     // 2a. Set default width for blocks
     if (element_width <= 0 && !is_inline) {
+        int avail = (ctx->container_width > 0) ? ctx->container_width : 800;
         if (strcasecmp(tag, "td") == 0) {
             // 🚀 UNIVERZALNI FIKS ZA TABELE: Delimo širinu ekrana na 3 jednaka dela
-            element_width = (ctx->container_width - margin_left) / 3;
+            element_width = (avail - margin_left) / 3;
         } else {
             // Tvoja originalna logika za sve ostale standardne block elemente
-            element_width = ctx->container_width - margin_left;
+            element_width = avail - margin_left;
         }
         
         if (element_width < 0) element_width = 0;
@@ -499,8 +510,8 @@ ctx->previous_margin_bottom = margin_bottom;
  
      child_ctx.parent_y = y + padding_top;
      child_ctx.current_y = y + padding_top;
-     child_ctx.container_width = element_width;
-     child_ctx.available_width = element_width;
+     child_ctx.container_width = (element_width > 0) ? element_width : ((ctx->container_width > 0) ? ctx->container_width : 800);
+     child_ctx.available_width = child_ctx.container_width;
  
      // Tvoj originalni Flexbox i Block rekurzivni layout za decu se nastavlja normalno ovde...
      if (is_flex) {
@@ -580,9 +591,19 @@ if (element_height == 0) {
 void layout_inline_element(cJSON *element, LayoutContext *ctx) {
     if (!element || !ctx) return;
 
+    // 🚀 QUICK CHECK: If hidden, zero out immediately
+    const char *display = get_json_string(element, "display", "inline");
+    const char *input_type = get_json_string(element, "input_type", "");
+    if (strcmp(display, "none") == 0 || strcmp(input_type, "hidden") == 0) {
+        set_json_number(element, "width", 0);
+        set_json_number(element, "height", 0);
+        set_json_number(element, "layout_calculated", 1);
+        return;
+    }
+
     int margin_right = get_json_number(element, "margin_right", 0);
     const char *tag = get_json_string(element, "tag", "");
-    const char *input_type = get_json_string(element, "input_type", "");
+    input_type = get_json_string(element, "input_type", "");
     
     int is_link = (strcmp(tag, "a") == 0);
     int is_button = get_json_bool(element, "is_button", 0) || 
@@ -717,6 +738,42 @@ void layout_inline_element(cJSON *element, LayoutContext *ctx) {
     
     // Update context for next element - pomera horizontalni flow u desno za sledeće dugme!
     ctx->current_x = x + width + margin_right;
+// ========== 🚀 DODATO: Rekurzivno obradi decu ==========
+cJSON *children = cJSON_GetObjectItem(element, "children");
+if (children && cJSON_IsArray(children) && cJSON_GetArraySize(children) > 0) {
+    // ✅ JEDAN kontekst za svu decu - izvan petlje!
+    LayoutContext child_ctx = *ctx;
+    child_ctx.parent_element = element;
+    child_ctx.parent_x = x;
+    child_ctx.parent_y = y;
+    child_ctx.current_x = x + get_json_number(element, "padding_left", 0);
+    child_ctx.current_y = y;
+    child_ctx.line_height = 0;
+    
+    cJSON *child;
+    cJSON_ArrayForEach(child, children) {
+        const char *child_tag = get_json_string(child, "tag", "");
+        
+        // Preskoči text node-ove - oni nemaju layout
+        if (strcmp(child_tag, "text") == 0) continue;
+        
+        const char *child_display = get_json_string(child, "display", "inline");
+        
+        if (strcmp(child_display, "block") == 0) {
+            layout_block_element(child, &child_ctx);
+        } else {
+            layout_inline_element(child, &child_ctx);  // ← Ovde se child_ctx ažurira!
+        }
+    }
+    
+    // ✅ Ažuriraj i glavni ctx na kraju
+    ctx->current_x = child_ctx.current_x;
+    ctx->current_y = child_ctx.current_y;
+    if (child_ctx.line_height > ctx->line_height) {
+        ctx->line_height = child_ctx.line_height;
+    }
+}
+// ========== KRAJ DODATKA ==========
 }
 
 
@@ -898,21 +955,26 @@ void layout_text_node(cJSON *element, LayoutContext *ctx) {
 void layout_flex_element(cJSON *element, LayoutContext *ctx) {
     const char *flex_direction = get_json_string(element, "flex_direction", "row");
 
-    
     if (strcmp(flex_direction, "row") == 0) {
         cJSON *children = cJSON_GetObjectItem(element, "children");
         if (children && cJSON_IsArray(children)) {
             int max_height = 0;
+            int num_children = cJSON_GetArraySize(children);
+            int avail_w = (ctx->container_width > 0) ? ctx->container_width : 800;
+            int default_w = (num_children > 0) ? (avail_w / num_children) : avail_w;
             
             cJSON *child;
             int idx = 0;
             cJSON_ArrayForEach(child, children) {
+                int child_w = get_json_number(child, "width", default_w);
+                if (child_w <= 0) child_w = default_w;
 
                 // CRITICAL: Set the child's parent context properly
                 LayoutContext child_ctx = *ctx;
                 child_ctx.parent_x = ctx->current_x;
                 child_ctx.parent_y = ctx->current_y;
-                child_ctx.container_width = get_json_number(child, "width", 100);
+                child_ctx.container_width = child_w;
+                child_ctx.available_width = child_w;
                 
                 // Layout the child using racunaj_pozicije, not layout_inline_block_element directly
                 racunaj_pozicije(child, ctx->current_x, ctx->current_y, 
@@ -920,12 +982,12 @@ void layout_flex_element(cJSON *element, LayoutContext *ctx) {
                 
                 // Get child dimensions and update context
                 int child_x = get_json_number(child, "x", 0);
-                int child_w = get_json_number(child, "width", 0);
+                int actual_child_w = get_json_number(child, "width", child_w);
                 int child_h = get_json_number(child, "height", 0);
 
                 // Update current_x for next child
-                if (child_x + child_w > ctx->current_x) {
-                    ctx->current_x = child_x + child_w;
+                if (child_x + actual_child_w > ctx->current_x) {
+                    ctx->current_x = child_x + actual_child_w;
                 }
                 
                 if (child_h > max_height) max_height = child_h;
@@ -1537,7 +1599,9 @@ void racunaj_pozicije(cJSON *element,
     }
     
     // 🛡️ KONAČNI REKURZIVNI OSIGURAČ (Proširen za Next.js skrivene x/y elemente)
+    const char *this_input_type = get_json_string(element, "input_type", "");
     if (strcmp(display, "none") == 0 || 
+        strcmp(this_input_type, "hidden") == 0 ||
         get_json_bool(element, "is_visible", 1) == 0 ||
         get_json_number(element, "x", 0) < -5000 || 
         get_json_number(element, "y", 0) < -5000) {
@@ -1722,6 +1786,15 @@ if (horizontal_menu && menu_index == 0) {
     
 // ========== Process Left Sidebar ==========
 if (left_sidebar) {
+    const char *sidebar_display = get_json_string(left_sidebar, "display", "block");
+    if (strcmp(sidebar_display, "none") == 0) {
+        set_json_number(left_sidebar, "width", 0);
+        set_json_number(left_sidebar, "height", 0);
+        set_json_number(left_sidebar, "layout_calculated", 1);
+        left_sidebar = NULL; // Prevent further processing
+    }
+}
+if (left_sidebar) {
     int sidebar_width = get_json_number(left_sidebar, "sidebar_width", 200);
     int sidebar_x = content_x;
     int sidebar_y = flow_y;
@@ -1788,6 +1861,15 @@ if (sidebar_y + sidebar_height > max_y) max_y = sidebar_y + sidebar_height;
 
 // ========== Process Right Sidebar ==========
 if (right_sidebar) {
+    const char *sidebar_display = get_json_string(right_sidebar, "display", "block");
+    if (strcmp(sidebar_display, "none") == 0) {
+        set_json_number(right_sidebar, "width", 0);
+        set_json_number(right_sidebar, "height", 0);
+        set_json_number(right_sidebar, "layout_calculated", 1);
+        right_sidebar = NULL; // Prevent further processing
+    }
+}
+if (right_sidebar) {
     int sidebar_width = get_json_number(right_sidebar, "sidebar_width", 200);
     int sidebar_x = content_x + content_width - sidebar_width;
     int sidebar_y = flow_y;
@@ -1828,18 +1910,28 @@ if (right_sidebar) {
         }
         
         const char *child_display = get_json_string(child, "display", "block");
-        if (strcmp(child_display, "none") == 0) {
-            continue;  // Skip display: none elements
-        }
-        // 🚀 INJEKCIJA #1: SKRIVENA POLJA I SKIP (Fiks za širinu)
+        const char *child_tag = get_json_string(child, "tag", "");
         const char *child_input_type = get_json_string(child, "input_type", "");
-        if (strcmp(child_input_type, "hidden") == 0) {
+
+        // 🚀 DRIFT RECOVERY: Force center search box if it's drifting
+        const char* child_name = get_json_string(child, "name", "");
+        if (strcmp(child_tag, "input") == 0 && strcmp(child_name, "q") == 0) {
+            int q_width = get_json_number(child, "width", 0);
+            if (q_width > 400) {
+                flow_x = content_x + (content_width - q_width) / 2;
+                if (flow_x < content_x) flow_x = content_x;
+            }
+        }
+
+        // 🚀 HARD RESET for hidden or none-display elements to prevent accumulation
+        if (strcmp(child_display, "none") == 0 || strcmp(child_input_type, "hidden") == 0) {
             set_json_number(child, "width", 0);
             set_json_number(child, "height", 0);
             set_json_number(child, "layout_calculated", 1);
-            continue; // Preskačemo pomeranje flow_x koordinate
+            continue;  // Skip processing and horizontal/vertical movement
         }
-        const char *child_tag = get_json_string(child, "tag", "");
+         
+        child_tag = get_json_string(child, "tag", "");
 
                 // ==========  Skip text nodes inside output elements ==========
                 if (get_json_bool(element, "is_output", 0) && strcmp(child_tag, "text") == 0) {
@@ -1874,7 +1966,9 @@ if (right_sidebar) {
         if (is_text_node || child_inline || is_inline_block) {
             // 🚀 INLINE SHIELD: Ako je dugme i širina mu je 0, bezbedno mu dodajemo procenjenu širinu preko tvoje funkcije
             int current_width = get_json_number(child, "width", 0);
-            if (current_width == 0 && (get_json_bool(child, "is_button", 0) || strcmp(get_json_string(child, "tag", ""), "button") == 0)) {
+            bool is_button_elem = get_json_bool(child, "is_button", 0) || strcmp(get_json_string(child, "tag", ""), "button") == 0;
+            
+            if (current_width == 0 && is_button_elem) {
                 cJSON *btn_children = cJSON_GetObjectItem(child, "children");
                 if (btn_children && cJSON_IsArray(btn_children)) {
                     cJSON *btn_text = cJSON_GetArrayItem(btn_children, 0);
@@ -1891,10 +1985,27 @@ if (right_sidebar) {
 
             // 🚀 AUTOMATSKI PRELOM REDA (Line-wrapping osigurač):
             // Ako trenutni flow_x + širina dugmeta probijaju ivicu roditelja, skočimo u novi red
+            // EXCEPT for buttons which we want to keep together if they are small
             if (flow_x + current_child_width > content_x + content_width && flow_x > content_x) {
                 flow_y += (line_height > 0) ? line_height : 24;
                 flow_x = content_x;
                 line_height = 0;
+
+                // 🚀 BUTTON ALIGNMENT FIX: Center buttons in the new line if they are Google-style
+                if (is_button_elem) {
+                    // Peek ahead to see total width of consecutive buttons
+                    int buttons_total_w = current_child_width;
+                    cJSON* next = child->next;
+                    while(next) {
+                        if (get_json_bool(next, "is_button", 0)) {
+                            buttons_total_w += get_json_number(next, "width", 120) + 10;
+                            next = next->next;
+                        } else break;
+                    }
+                    if (buttons_total_w < content_width) {
+                        flow_x = content_x + (content_width - buttons_total_w) / 2;
+                    }
+                }
             }
 
             child_x = flow_x;
