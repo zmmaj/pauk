@@ -2544,9 +2544,9 @@ char* fetch_external_script(const char *url) {
     
     // Determine protocol
     if (strncmp(url, "https://", 8) == 0) {
-        rc = fetch_https_content(url, NULL, &content, &content_size, 0);
+        rc = fetch_https_content_keep_alive(url, &content, &content_size);
     } else if (strncmp(url, "http://", 7) == 0) {
-        rc = fetch_http_content(url, NULL, &content, &content_size, 0);
+        rc = fetch_http_content_keep_alive(url, &content, &content_size);
     } else {
         // Relative URL - needs base URL resolution
       //  printf("⚠️ Relative URL without base: %s\n", url);
