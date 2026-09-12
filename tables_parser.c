@@ -334,7 +334,24 @@ int calculate_cell_content_width(cJSON *cell, int max_width) {
                 int font_size = get_json_number(child, "font_size", 16);
 
                 child_width = estimate_text_width(text_content, font_size, font_weight, font_style) + 20;
-            } else if (strcmp(tag, "img") == 0 || strcmp(tag, "image") == 0) {
+            } 
+            
+                        // 🚀 INTERAKTIVNI ŠTIT: Prepoznaj input polja i dugmad da ne potonu na 0px!
+                        else if (strcmp(tag, "input") == 0 || strcmp(tag, "button") == 0) {
+                            const char *input_type = get_json_string(child, "input_type", "text");
+                            
+                            if (strcmp(input_type, "hidden") == 0) {
+                                child_width = 0; // Skrivena polja ne zauzimaju prostor
+                            } else if (get_json_bool(child, "is_search_input", 0) || strcmp(input_type, "text") == 0) {
+                                child_width = 280; // Standardna širina za Google Search Input Box
+                            } else if (get_json_bool(child, "is_button", 0) || strcmp(input_type, "submit") == 0 || strcmp(tag, "button") == 0) {
+                                child_width = 140; // Standardna širina za "Google Search" i "Lucky" dugmad
+                            } else {
+                                child_width = 150; // Fallback za ostale vidljive inpute
+                            }
+                        }
+            
+            else if (strcmp(tag, "img") == 0 || strcmp(tag, "image") == 0) {
                 child_width = get_json_number(child, "width", 50) + 10;
             } else if (strcmp(tag, "br") == 0) {
                 child_width = 0;
@@ -356,7 +373,10 @@ int calculate_cell_content_width(cJSON *cell, int max_width) {
                 }
             }
 
-            if (child_width > max_child_width) {
+            if (strcmp(tag, "input") == 0 || strcmp(tag, "button") == 0) {
+                if (max_child_width == 40) max_child_width = 0;
+                max_child_width += child_width;
+            } else if (child_width > max_child_width) {
                 max_child_width = child_width;
             }
         }
@@ -1465,9 +1485,39 @@ void render_table_from_data(pauk_ui_t* pauk_ui, cJSON* table_data,
                 html_font_t* font = font_manager_get_font(&pauk_ui->font_manager, 
                                           pauk_ui->font_manager.default_font_index);
                 
-                for (int ci = 0; ci < child_count; ci++) {
-                    cJSON *child = cJSON_GetArrayItem(children, ci);
-                   // const char *ctag = get_json_string(child, "tag", "");
+                                          for (int ci = 0; ci < child_count; ci++) {
+                                            cJSON *child = cJSON_GetArrayItem(children, ci);
+                                            const char *ctag = get_json_string(child, "tag", "");
+                                            
+                                            // 🚀 Ako je input, renderuj ga kao input/dugme
+                                            if (strcmp(ctag, "input") == 0) {
+                                                const char *input_type = get_json_string(child, "input_type", "text");
+                                                
+                                                // Preskoči hidden
+                                                if (strcmp(input_type, "hidden") != 0) {
+                                                    int child_x = get_json_number(child, "x", -99999);
+                                                    int child_y = get_json_number(child, "y", -99999);
+                                                    
+                                                    // Ako koordinate nisu validne, koristi poziciju ćelije
+                                                    if (child_x == -99999 || child_y == -99999) {
+                                                        child_x = final_x + cellpadding;
+                                                        child_y = text_cur_y;
+                                                    }
+                                                    
+                                                    // Pozovi render_input_element iz forms_parser.c
+                                                    extern void render_input_element(pauk_ui_t *pauk_ui, cJSON *element, int x, int y, html_font_t *font);
+                                                    
+                                                    html_font_t *input_font = font_manager_get_font(&pauk_ui->font_manager,
+                                                        pauk_ui->font_manager.default_font_index);
+                                                    
+                                                    render_input_element(pauk_ui, child, child_x, child_y, input_font);
+                                                    
+                                                    // Pomeri Y za sledeći element
+                                                    int child_height = get_json_number(child, "height", 35);
+                                                    text_cur_y += child_height + 4;
+                                                }
+                                                continue;  // Ne renderuj tekst za input
+                                            }
                     const char *text = get_json_string(child, "text", "");
                     if (!text || !text[0]) {
                         text = get_json_string(child, "content", "");
