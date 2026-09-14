@@ -253,7 +253,11 @@ void render_input_element(pauk_ui_t *pauk_ui, cJSON *element, int x, int y, html
     int width = get_json_number(element, "width", 150);
     int height = get_json_number(element, "height", 35);
     const char *bg_color = get_json_string(element, "bg_color", "#ffffff");
-    
+
+    printf("DEBUG INPUT: element_id=%d, type=%s, x=%d, y=%d, w=%d, h=%d\n",
+        get_json_number(element, "element_id", -1),
+        type, x, y, width, height);
+
     // Draw input background
     draw_filled_box_to_pixelmap(pauk_ui, x, y, width, height, 
                                 parse_hex_color(bg_color + 1, strlen(bg_color + 1)));
