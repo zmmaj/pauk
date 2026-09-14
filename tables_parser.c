@@ -958,8 +958,80 @@ void calculate_table_borders_from_cells(cJSON *table_element) {
 
 
 
+// ==========================================================
+// POMOĆNA FUNKCIJA: Rekurzivno renderovanje sadržaja ćelije
+// ==========================================================
+static void render_cell_content_recursive(pauk_ui_t *pauk_ui, cJSON *element,
+    int cell_x, int cell_y,
+    int cell_width, int cellpadding,
+    html_font_t *font, int *current_y,
+    int scroll_y) {
+if (!element) return;
 
+const char *tag = get_json_string(element, "tag", "");
 
+// ===== INPUT =====
+if (strcmp(tag, "input") == 0) {
+const char *input_type = get_json_string(element, "input_type", "text");
+if (strcmp(input_type, "hidden") == 0) return;
+
+int elem_x = get_json_number(element, "x", -99999);
+int elem_y = get_json_number(element, "y", -99999);
+int elem_h = get_json_number(element, "height", 35);
+
+if (elem_x == -99999) elem_x = cell_x + cellpadding;
+if (elem_y == -99999) elem_y = *current_y;
+
+elem_y -= scroll_y;
+
+extern void render_input_element(pauk_ui_t *pauk_ui, cJSON *element, 
+  int x, int y, html_font_t *font);
+render_input_element(pauk_ui, element, elem_x, elem_y, font);
+
+*current_y += elem_h + 4;
+return;
+}
+
+// ===== TEKST =====
+if (strcmp(tag, "text") == 0) {
+const char *text = get_json_string(element, "text", "");
+if (!text || !text[0]) text = get_json_string(element, "content", "");
+if (text && text[0]) {
+int font_size = get_json_number(element, "font_size", 16);
+render_ttf_text_to_pixelmap(pauk_ui, text, cell_x + cellpadding, 
+*current_y - scroll_y,
+font, font_size, 0xFF000000, 0, 0);
+*current_y += font_size + 4;
+}
+return;
+}
+
+// ===== LINK =====
+if (strcmp(tag, "a") == 0) {
+const char *text = get_json_string(element, "text", "");
+if (!text || !text[0]) text = get_json_string(element, "content", "");
+if (text && text[0]) {
+int font_size = get_json_number(element, "font_size", 16);
+render_ttf_text_to_pixelmap(pauk_ui, text, cell_x + cellpadding,
+*current_y - scroll_y,
+font, font_size, 0xFF0000FF, 1, 0);
+*current_y += font_size + 4;
+}
+return;
+}
+
+// ===== KONTEJNERI (div, span, itd.) - rekurzija =====
+cJSON *children = cJSON_GetObjectItem(element, "children");
+if (children && cJSON_IsArray(children)) {
+int child_count = cJSON_GetArraySize(children);
+for (int i = 0; i < child_count; i++) {
+cJSON *child = cJSON_GetArrayItem(children, i);
+render_cell_content_recursive(pauk_ui, child, cell_x, cell_y,
+  cell_width, cellpadding, font, 
+  current_y, scroll_y);
+}
+}
+}
 
 
 void layout_table_cells_natural(cJSON *table_element, int table_x, int table_y, LayoutContext *ctx) {
@@ -1453,93 +1525,24 @@ void render_table_from_data(pauk_ui_t* pauk_ui, cJSON* table_data,
             
             // Renderovanje teksta i sadržaja ćelije
             cJSON *children = cJSON_GetObjectItem(cell, "children");
+
+
             int font_size = get_json_number(cell, "font_size", 16);
             const char *text_align = get_json_string(cell, "text_align", "left");
             const char *vertical_align = get_json_string(cell, "vertical_align", "middle");
             
             if (children && cJSON_IsArray(children) && cJSON_GetArraySize(children) > 0) {
-                int child_count = cJSON_GetArraySize(children);
-                int line_h = font_size + 4;
-                
-                int text_lines = 0;
-                for (int ci = 0; ci < child_count; ci++) {
-                    cJSON *child = cJSON_GetArrayItem(children, ci);
-                    const char *ctag = get_json_string(child, "tag", "");
-                    if (strcmp(ctag, "text") == 0 || get_json_string(child, "text", NULL) || get_json_string(child, "content", NULL)) {
-                        text_lines++;
-                    }
-                }
-                if (text_lines == 0) text_lines = 1;
-                
-                int total_text_h = text_lines * line_h;
-                int text_cur_y;
-                if (strcmp(vertical_align, "top") == 0) {
-                    text_cur_y = final_y + cellpadding;
-                } else if (strcmp(vertical_align, "bottom") == 0) {
-                    text_cur_y = final_y + cell_height - total_text_h - cellpadding;
-                } else {
-                    text_cur_y = final_y + (cell_height - total_text_h) / 2;
-                }
-                if (text_cur_y < final_y + cellpadding) text_cur_y = final_y + cellpadding;
+                int text_cur_y = final_y + cellpadding;
                 
                 html_font_t* font = font_manager_get_font(&pauk_ui->font_manager, 
                                           pauk_ui->font_manager.default_font_index);
                 
-                                          for (int ci = 0; ci < child_count; ci++) {
-                                            cJSON *child = cJSON_GetArrayItem(children, ci);
-                                            const char *ctag = get_json_string(child, "tag", "");
-                                            
-                                            // 🚀 Ako je input, renderuj ga kao input/dugme
-                                            if (strcmp(ctag, "input") == 0) {
-                                                const char *input_type = get_json_string(child, "input_type", "text");
-                                                
-                                                // Preskoči hidden
-                                                if (strcmp(input_type, "hidden") != 0) {
-                                                    int child_x = get_json_number(child, "x", -99999);
-                                                    int child_y = get_json_number(child, "y", -99999);
-                                                    
-                                                    // Ako koordinate nisu validne, koristi poziciju ćelije
-                                                    if (child_x == -99999 || child_y == -99999) {
-                                                        child_x = final_x + cellpadding;
-                                                        child_y = text_cur_y;
-                                                    }
-                                                    
-                                                    // Pozovi render_input_element iz forms_parser.c
-                                                    extern void render_input_element(pauk_ui_t *pauk_ui, cJSON *element, int x, int y, html_font_t *font);
-                                                    
-                                                    html_font_t *input_font = font_manager_get_font(&pauk_ui->font_manager,
-                                                        pauk_ui->font_manager.default_font_index);
-                                                    
-                                                    render_input_element(pauk_ui, child, child_x, child_y, input_font);
-                                                    
-                                                    // Pomeri Y za sledeći element
-                                                    int child_height = get_json_number(child, "height", 35);
-                                                    text_cur_y += child_height + 4;
-                                                }
-                                                continue;  // Ne renderuj tekst za input
-                                            }
-                    const char *text = get_json_string(child, "text", "");
-                    if (!text || !text[0]) {
-                        text = get_json_string(child, "content", "");
-                    }
-                    if (text && text[0]) {
-                        const char *fweight = get_json_string(child, "font_weight", "normal");
-                        const char *fstyle = get_json_string(child, "font_style", "normal");
-                        int c_font_size = get_json_number(child, "font_size", font_size);
-                        int text_width = estimate_text_width(text, c_font_size, fweight, fstyle);
-                        int text_x;
-                        if (strcmp(text_align, "center") == 0) {
-                            text_x = final_x + (cell_width - text_width) / 2;
-                        } else if (strcmp(text_align, "right") == 0) {
-                            text_x = final_x + cell_width - text_width - cellpadding;
-                        } else {
-                            text_x = final_x + cellpadding;
-                        }
-                        
-                        render_ttf_text_to_pixelmap(pauk_ui, text, text_x, text_cur_y,
-                                          font, c_font_size, 0xFF000000, 0, 0);
-                        text_cur_y += line_h;
-                    }
+                int child_count = cJSON_GetArraySize(children);
+                for (int ci = 0; ci < child_count; ci++) {
+                    cJSON *child = cJSON_GetArrayItem(children, ci);
+                    render_cell_content_recursive(pauk_ui, child, final_x, final_y,
+                                                   cell_width, cellpadding, font, 
+                                                   &text_cur_y, scroll_y);
                 }
             } else {
                 // Direktan tekst ako nema children
@@ -1596,3 +1599,5 @@ void render_table_from_data(pauk_ui_t* pauk_ui, cJSON* table_data,
         cJSON_Delete(rows_array);
     }
 }
+
+
