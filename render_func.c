@@ -820,7 +820,7 @@ if (strcmp(tag, "table") == 0) {
     cJSON *table_data = cJSON_GetObjectItem(element, "table_data");
     if (table_data) {
         // VRAĆAMO final_x i final_y jer oni sadrže ispravne layout pozicije i razmak za caption!
-        render_table_from_data(pauk_ui, table_data, final_x, final_y, 0, 0, scroll_y);
+        render_table_from_data(pauk_ui, table_data, final_x, final_y, offset_x, offset_y, scroll_y);
     }
 }
 
@@ -1482,52 +1482,90 @@ void test_text_rendering(pauk_ui_t* pauk_ui) {
 }
 
 
-// ======================== MIS ======================
 cJSON* find_element_at_position(cJSON* root, int x, int y) {
     if (!root) return NULL;
     
-    // If root is an array, check each element
+    // Ako je koren niz objekata, skeniramo ga unazad (od vrha ka dnu ekrana, Z-index pravilo)
     if (cJSON_IsArray(root)) {
-        cJSON *item;
-        cJSON_ArrayForEach(item, root) {
+        int array_size = cJSON_GetArraySize(root);
+        for (int i = array_size - 1; i >= 0; i--) {
+            cJSON *item = cJSON_GetArrayItem(root, i);
             cJSON *hit = find_element_at_position(item, x, y);
             if (hit) return hit;
         }
         return NULL;
     }
     
-    // Check children first
-    cJSON *children = cJSON_GetObjectItem(root, "children");
-    if (children && cJSON_IsArray(children)) {
-        cJSON *child;
-        cJSON_ArrayForEach(child, children) {
-            cJSON *hit = find_element_at_position(child, x, y);
-            if (hit) {
-                // ===== SPECIAL CASE: If hit is text, check if parent is clickable =====
-                const char* hit_tag = get_json_string(hit, "tag", "");
-                if (strcmp(hit_tag, "text") == 0) {
-                    // Check if parent is clickable (link, button, image, etc.)
-                    int parent_is_clickable = get_json_bool(root, "is_clickable", 0);
-                    int parent_is_link = get_json_bool(root, "is_link", 0);
-                    int parent_is_button = get_json_bool(root, "is_button", 0);
-                    int parent_is_image = get_json_bool(root, "is_image", 0);
-                    const char* parent_tag = get_json_string(root, "tag", "");
-                    
-                    // Return parent if it's clickable
-                    if (parent_is_clickable || parent_is_link || parent_is_button || parent_is_image ||
-                        strcmp(parent_tag, "a") == 0 ||
-                        strcmp(parent_tag, "button") == 0 ||
-                        strcmp(parent_tag, "img") == 0 ||
-                        strcmp(parent_tag, "image") == 0) {
-                        return root;  // Return the clickable parent
+    // 🚀 SKRETNICA ZA TABELE: Ako naletimo na tabelu, odmah preusmeravamo miša 
+    // u objekat "table_data" koji čuva prave i aktivne koordinate grida!
+    int is_table = get_json_bool(root, "is_table", 0);
+    // 🚀 NOVA PAMETNA SKRETNICA ZA TABELE:
+    // Umesto skakanja u "table_data" (gde nema dece), dopuštamo mišu da prođe kroz glavni "children"
+    // niz, ali i eksplicitno skeniramo "rows" unutar "table_data" ako deca žive tamo!
+    if (is_table) {
+        cJSON *t_data = cJSON_GetObjectItem(root, "table_data");
+        if (t_data) {
+            cJSON *rows = cJSON_GetObjectItem(t_data, "rows");
+            if (rows && cJSON_IsArray(rows)) {
+                int row_count = cJSON_GetArraySize(rows);
+                for (int i = row_count - 1; i >= 0; i--) {
+                    cJSON *row = cJSON_GetArrayItem(rows, i);
+                    cJSON *cells = cJSON_GetObjectItem(row, "cells");
+                    if (cells && cJSON_IsArray(cells)) {
+                        int cell_count = cJSON_GetArraySize(cells);
+                        for (int j = cell_count - 1; j >= 0; j--) {
+                            cJSON *cell = cJSON_GetArrayItem(cells, j);
+                            // Proveravamo da li ćelija ima skriveni children niz unutar table_data
+                            cJSON *c_children = cJSON_GetObjectItem(cell, "children");
+                            if (c_children) {
+                                cJSON *hit = find_element_at_position(c_children, x, y);
+                                if (hit) return hit;
+                            }
+                        }
                     }
                 }
-                return hit;
             }
         }
     }
     
-    // Check this element
+    // Provera unutrašnje dece (prioritet imaju najdublji iscrtani elementi)
+    cJSON *children = cJSON_GetObjectItem(root, "children");
+    if (children && cJSON_IsArray(children)) { // Zaobilazimo niz children ako je tabela
+        int child_count = cJSON_GetArraySize(children);
+        for (int i = child_count - 1; i >= 0; i--) {
+            cJSON *child = cJSON_GetArrayItem(children, i);
+            cJSON *hit = find_element_at_position(child, x, y);
+            if (hit) {
+                // 🚀 SEMANTIČKI ŠTIT: Ako je miš pogodio unutrašnje dete (bilo tekst, div, span ili svg),
+                // proveravamo da li je roditelj (ili sam element) klikabilan!
+                int parent_is_clickable = get_json_bool(root, "is_clickable", 0) || 
+                                          get_json_bool(root, "is_link", 0) || 
+                                          get_json_bool(root, "is_button", 0);
+                
+                const char* parent_tag = get_json_string(root, "tag", "");
+                
+                // Ako je roditelj stvarna akciona komponenta (a, button, input), 
+                // miš MORA da aktivira roditelja, čak i ako dete nema is_clickable!
+                if (parent_is_clickable || strcmp(parent_tag, "a") == 0 || 
+                    strcmp(parent_tag, "button") == 0 || strcmp(parent_tag, "input") == 0) {
+                    return root;  // Vraćamo klikabilnog roditelja (ceo A link od 50px!)
+                }
+                
+                // ===== SPECIAL CASE: Ako je hit tekst, zadržavamo tvoju postojeću proveru =====
+                const char* hit_tag = get_json_string(hit, "tag", "");
+                if (strcmp(hit_tag, "text") == 0) {
+                    int parent_is_image = get_json_bool(root, "is_image", 0);
+                    if (parent_is_image || strcmp(parent_tag, "img") == 0 || strcmp(parent_tag, "image") == 0) {
+                        return root;  
+                    }
+                }
+                
+                return hit; // Vraćamo precizno pogođeno dete ako roditelj nije klikabilan kontejner
+            }
+        }
+    }
+    
+    // Provera granica trenutnog elementa
     int elem_x = get_json_number(root, "x", 0);
     int elem_y = get_json_number(root, "y", 0);
     int elem_w = get_json_number(root, "width", 0);
@@ -1536,11 +1574,35 @@ cJSON* find_element_at_position(cJSON* root, int x, int y) {
     if (elem_w > 0 && elem_h > 0 &&
         x >= elem_x && x < elem_x + elem_w &&
         y >= elem_y && y < elem_y + elem_h) {
-        return root;
+        
+        const char* root_tag = get_json_string(root, "tag", "");
+        
+        // Check structural wrappers (div, span, td, tr, table, form)
+        if (strcmp(root_tag, "div") == 0 || strcmp(root_tag, "span") == 0 || 
+            strcmp(root_tag, "td") == 0 || strcmp(root_tag, "tr") == 0 || 
+            strcmp(root_tag, "table") == 0 || strcmp(root_tag, "form") == 0) {
+            
+            // If the wrapper itself was explicitly given a click action, return it
+            if (get_json_bool(root, "is_clickable", 0)) {
+                return root;
+            }
+            
+            // 🚀 THE FIX: If the wrapper isn't clickable, DO NOT return NULL here. 
+            // Returning NULL short-circuits the engine and discards the valid interactive
+            // children (like the search box or button) that we already matched in the loop above.
+            // By doing nothing here, we allow the function to naturally drop out and pass back 
+            // the deeply matched child node.
+        } else {
+            // For actual atomic content tags (inputs, buttons, links, images), return them immediately
+            return root;
+        }
     }
+
     
     return NULL;
 }
+
+
 
 void handle_element_click(pauk_ui_t* pauk_ui, cJSON* element, int button) {
     if (!element) return;
