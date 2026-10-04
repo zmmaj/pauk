@@ -1432,16 +1432,11 @@ if (strcasecmp(tag, "div") == 0) {
 // =================================================
 
 
-    // Skip non-rendering elements
-    const char *skip_tags[] = {
+     // Skip non-rendering structural elements only
+     const char *skip_tags[] = {
         "meta", "link", "title",
         "head", "html", "!doctype", "noscript", "template",
         "colgroup", "col",
-        "path",        // SVG paths (I don't render SVG)
-        "svg",         // SVG containers
-        "defs",        // SVG definitions
-        "symbol",      // SVG symbols
-        "use",         // SVG use references
         "iframe",      // Iframes (V2 feature)
         "canvas",      // Canvas (V2 feature)
         "style",       // Already handled separately
@@ -1453,6 +1448,7 @@ if (strcasecmp(tag, "div") == 0) {
             return NULL;
         }
     }
+
 
     // Create element JSON
     cJSON *elem_json = cJSON_CreateObject();
@@ -1499,44 +1495,66 @@ if (strcasecmp(tag, "div") == 0) {
         free(id_str);
     }
 
-    // Get classes
-    const lxb_char_t *cls = lxb_dom_element_class(elem, &tag_len);
-    if (cls && tag_len > 0) {
-        char *cls_str = malloc(tag_len + 1);
-        memcpy(cls_str, cls, tag_len);
-        cls_str[tag_len] = '\0';
-        set_json_string(elem_json, "class_string", cls_str);
-
-        cJSON *classes_array = cJSON_CreateArray();
-        char *saveptr;
-        char *token = strtok_r(cls_str, " \t\n\r", &saveptr);
-        while (token) {
-            if (strlen(token) > 0) {
-                cJSON_AddItemToArray(classes_array, cJSON_CreateString(token));
-            }
-            token = strtok_r(NULL, " \t\n\r", &saveptr);
-        }
-        cJSON_ReplaceItemInObject(elem_json, "classes", classes_array);
-        free(cls_str);
-    } else {
-        set_json_string(elem_json, "class_string", "");
-        cJSON_ReplaceItemInObject(elem_json, "classes", cJSON_CreateArray());
-    }
-
-// Parse onclick attribute for all elements
-lxb_dom_attr_t *onclick_attr = lxb_dom_element_attr_by_name(elem, (lxb_char_t*)"onclick", 7);
-if (onclick_attr) {
-    size_t onclick_len;
-    const lxb_char_t *onclick_value = lxb_dom_attr_value(onclick_attr, &onclick_len);
-    if (onclick_value && onclick_len > 0) {
-        char *onclick_str = malloc(onclick_len + 1);
-        memcpy(onclick_str, onclick_value, onclick_len);
-        onclick_str[onclick_len] = '\0';
-        set_json_string(elem_json, "onclick", onclick_str);
-        set_json_bool(elem_json, "has_onclick", 1);
-        free(onclick_str);
-    }
-}
+     // Get classes
+     const lxb_char_t *cls = lxb_dom_element_class(elem, &tag_len);
+     int je_skriveni_google_element = 0;
+     
+     if (cls && tag_len > 0) {
+         // Kreiramo radnu kopiju stringa za strtok_r
+         char *cls_str_worker = malloc(tag_len + 1);
+         memcpy(cls_str_worker, cls, tag_len);
+         cls_str_worker[tag_len] = '\0';
+ 
+         // Kreiramo čistu kopiju koja ostaje netaknuta za cJSON class_string
+         char *cls_str_clean = malloc(tag_len + 1);
+         memcpy(cls_str_clean, cls, tag_len);
+         cls_str_clean[tag_len] = '\0';
+         set_json_string(elem_json, "class_string", cls_str_clean);
+ 
+         cJSON *classes_array = cJSON_CreateArray();
+         char *saveptr;
+         char *token = strtok_r(cls_str_worker, " \t\n\r", &saveptr);
+         while (token) {
+             if (strlen(token) > 0) {
+                 cJSON_AddItemToArray(classes_array, cJSON_CreateString(token));
+                 
+                 // 🚀 HIRURŠKA PROVERA: Ako element sadrži klasu gb_Q, označavamo ga za brisanje
+                 if (strcmp(token, "gb_Q") == 0) {
+                     je_skriveni_google_element = 1;
+                 }
+             }
+             token = strtok_r(NULL, " \t\n\r", &saveptr);
+         }
+         cJSON_ReplaceItemInObject(elem_json, "classes", classes_array);
+         
+         free(cls_str_worker);
+         free(cls_str_clean);
+     } else {
+         set_json_string(elem_json, "class_string", "");
+         cJSON_ReplaceItemInObject(elem_json, "classes", cJSON_CreateArray());
+     }
+ 
+     // 🚀 FILTER SAKRIVENIH ŠABLONA: Potpuno izbacujemo gb_Q element sa samog dna ekrana
+     if (je_skriveni_google_element) {
+         free(tag);
+         return NULL;
+     }
+ 
+     // Parse onclick attribute for all elements
+     lxb_dom_attr_t *onclick_attr = lxb_dom_element_attr_by_name(elem, (lxb_char_t*)"onclick", 7);
+     if (onclick_attr) {
+         size_t onclick_len;
+         const lxb_char_t *onclick_value = lxb_dom_attr_value(onclick_attr, &onclick_len);
+         if (onclick_value && onclick_len > 0) {
+             char *onclick_str = malloc(onclick_len + 1);
+             memcpy(onclick_str, onclick_value, onclick_len);
+             onclick_str[onclick_len] = '\0';
+             set_json_string(elem_json, "onclick", onclick_str);
+             set_json_bool(elem_json, "has_onclick", 1);
+             free(onclick_str);
+         }
+     }
+ 
 
       // ========== ADD THIS: PARSE INLINE STYLES (SAFER VERSION) ==========
     // Parse style attribute manually to avoid crash
@@ -1675,7 +1693,39 @@ else if (strcmp(prop, "margin") == 0) {
         }
     }
     // ========== END INLINE STYLES PARSING ==========
-    
+    // 🚀 PRESRTAČ ZA VEKTORSKU GRAFIKU: Čuvamo stabilnost stabla za Google Apps!
+    if (strcasecmp(tag, "svg") == 0) {
+        set_json_bool(elem_json, "is_svg", 1);
+        set_json_string(elem_json, "display", "inline-block");
+        
+        // Izvlačimo dimenzije (Google Apps je fiksno 24x24)
+        int sw = get_json_number(elem_json, "width", 24);
+        int sh = get_json_number(elem_json, "height", 24);
+        if (sw <= 0) sw = 24;
+        if (sh <= 0) sh = 24;
+        set_json_number(elem_json, "width", sw);
+        set_json_number(elem_json, "height", sh);
+        
+        // Fallback: Ako NanoSVG blit drajver zakaže, upisujemo tačkice kao tekstualnu labelu
+        set_json_string(elem_json, "text", "⣿");
+        set_json_string(elem_json, "content", "⣿");
+    }
+    else if (strcasecmp(tag, "path") == 0) {
+        // Za path element samo izvučemo sirovu "d" instrukciju za NanoSVG i prekidamo dublju rekurziju
+        lxb_dom_attr_t *d_attr = lxb_dom_element_attr_by_name(elem, (lxb_char_t*)"d", 1);
+        if (d_attr) {
+            size_t d_len;
+            const lxb_char_t *d_val = lxb_dom_attr_value(d_attr, &d_len);
+            if (d_val && d_len > 0) {
+                char *d_str = malloc(d_len + 1);
+                memcpy(d_str, d_val, d_len);
+                d_str[d_len] = '\0';
+                set_json_string(elem_json, "svg_path_d", d_str);
+                free(d_str);
+            }
+        }
+        set_json_bool(elem_json, "is_visible", 0); // Ne traži raspored za sirovi path čvor
+    }  
     // ========== FORME =====================
  if (strcasecmp(tag, "form") == 0 ||
  strcasecmp(tag, "input") == 0 ||
@@ -1718,12 +1768,10 @@ process_form_element(elem_json, elem, tag);
 
    // ========== HANDLE TABLE ELEMENTS ==========
 if (strcasecmp(tag, "table") == 0) {
-    // ===== KORISTI NOVI TABLES PARSER =====
     cJSON *table_data = parse_table_complete(elem);
     if (table_data) {
         cJSON_AddItemToObject(elem_json, "table_data", table_data);
         
-        // Preuzmi atribute iz table_data
         int border = get_json_number(table_data, "border", 1);
         int cellspacing = get_json_number(table_data, "cellspacing", 2);
         int cellpadding = get_json_number(table_data, "cellpadding", 1);
@@ -1732,174 +1780,32 @@ if (strcasecmp(tag, "table") == 0) {
         set_json_number(elem_json, "cellspacing", cellspacing);
         set_json_number(elem_json, "cellpadding", cellpadding);
         
-        // Dodaj matricu (za layout engine)
         cJSON *matrix = cJSON_GetObjectItem(table_data, "matrix");
         if (matrix) {
             cJSON_AddItemToObject(elem_json, "table_matrix", cJSON_Duplicate(matrix, 1));
         }
         
-        // Postavi flagove
         set_json_bool(elem_json, "is_table", 1);
         set_json_number(elem_json, "row_count", get_json_number(table_data, "row_count", 0));
         set_json_number(elem_json, "col_count", get_json_number(table_data, "col_count", 0));
-        set_json_bool(elem_json, "use_direct_recursion", 0);
-        // ===== KREIRAJ DECU OD ĆELIJA (za renderovanje) =====
-        cJSON *children_array = cJSON_CreateArray();
-        cJSON *rows = cJSON_GetObjectItem(table_data, "rows");
-        
-        if (rows && cJSON_IsArray(rows)) {
-            int row_count = cJSON_GetArraySize(rows);
-            for (int r = 0; r < row_count; r++) {
-                cJSON *row = cJSON_GetArrayItem(rows, r);
-                cJSON *cells = cJSON_GetObjectItem(row, "cells");
-                
-                if (cells && cJSON_IsArray(cells)) {
-                    int cell_count = cJSON_GetArraySize(cells);
-                    for (int c = 0; c < cell_count; c++) {
-                        cJSON *cell = cJSON_GetArrayItem(cells, c);
-                        
-                        // Kreiraj ravan element za svaku ćeliju
-                        cJSON *flat_child = cJSON_CreateObject();
-                        
-                        // 1. DINAMIČKI IZRAČUNAJ ŠIRINU ĆELIJE PREMA TVOJOJ FUNKCIJI DA NE POTONE NA 100px
-                        int computed_width = calculate_cell_content_width(cell, 800);
-                        if (computed_width < 100) computed_width = 100;
-
-                        // Google specifične X pozicije ćelija (tri kolone)
-                        int cell_x = (c == 0) ? 2 : (c == 1) ? 62 : 342;
-                        int cell_y = 298;
-
-                        set_json_number(flat_child, "width", computed_width);
-                        set_json_number(flat_child, "height", 45); // Dovoljno visoko za inline elemente
-                        set_json_number(flat_child, "x", cell_x);
-                        set_json_number(flat_child, "y", cell_y);
-                        set_json_string(flat_child, "display", "inline-block");
-
-                        // Prenesi bitne podatke
-                        const char *cell_id = get_json_string(cell, "id", "");
-                        if (cell_id && strlen(cell_id) > 0) {
-                            set_json_string(flat_child, "id", cell_id);
-                        }
-                        
-                        // Ako ćelija ima direktan tekst, dodaj ga
-                        cJSON *text_item = cJSON_GetObjectItem(cell, "text");
-                        if (text_item && cJSON_IsString(text_item)) {
-                            set_json_string(flat_child, "tag", "text");
-                            set_json_string(flat_child, "type", "text");
-                            set_json_string(flat_child, "content", text_item->valuestring);
-                            set_json_string(flat_child, "text", text_item->valuestring);
-                        } else {
-                            set_json_string(flat_child, "tag", "td");
-                            set_json_string(flat_child, "type", "table-cell");
-                        }
-                        
-                        int matrix_row = get_json_number(cell, "matrix_row", r);
-                        int matrix_col = get_json_number(cell, "matrix_col", c);
-                        int colspan = get_json_number(cell, "colspan", 1);
-                        int rowspan = get_json_number(cell, "rowspan", 1);
-                        
-                        set_json_number(flat_child, "matrix_row", matrix_row);
-                        set_json_number(flat_child, "matrix_col", matrix_col);
-                        set_json_number(flat_child, "colspan", colspan);
-                        set_json_number(flat_child, "rowspan", rowspan);
-                        set_json_number(flat_child, "row_index", r);
-                        set_json_number(flat_child, "cell_index", c);
-                        
-                        // 2. HORIZONTALNO REDANJE UNUTRAŠNJE DECE (Čistimo dekorativne spanove i ređamo elemente)
-                        cJSON *cell_children = cJSON_GetObjectItem(cell, "children");
-                        if (cell_children && cJSON_IsArray(cell_children) && cJSON_GetArraySize(cell_children) > 0) {
-                            cJSON *child_array = cJSON_CreateArray();
-                            int current_inline_x = cell_x + 6; // Početni X unutar ćelije
-                            
-                            for (int k = 0; k < cJSON_GetArraySize(cell_children); k++) {
-                                cJSON *child_element = cJSON_GetArrayItem(cell_children, k);
-                                if (!child_element) continue;
-
-                                cJSON *target_element = child_element;
-                                const char *orig_tag = get_json_string(child_element, "tag", "");
-
-                                // 🚀 DEKORATIVNI SKENER: Ako je element span ili div koji sadrži input, uđite dublje!
-                                if (strcmp(orig_tag, "span") == 0 || strcmp(orig_tag, "div") == 0) {
-                                    cJSON *sub_children = cJSON_GetObjectItem(child_element, "children");
-                                    if (sub_children && cJSON_IsArray(sub_children) && cJSON_GetArraySize(sub_children) > 0) {
-                                        cJSON *first_sub = get_json_string(cJSON_GetArrayItem(sub_children, 0), "tag", NULL) ? cJSON_GetArrayItem(sub_children, 0) : NULL;
-                                        if (first_sub && strcmp(get_json_string(first_sub, "tag", ""), "span") == 0) {
-                                            cJSON *nested_children = cJSON_GetObjectItem(first_sub, "children");
-                                            if (nested_children && cJSON_IsArray(nested_children) && cJSON_GetArraySize(nested_children) > 0) {
-                                                first_sub = cJSON_GetArrayItem(nested_children, 0);
-                                            }
-                                        }
-                                        if (first_sub && strcmp(get_json_string(first_sub, "tag", ""), "input") == 0) {
-                                            target_element = first_sub; // Uspešno izvučeno sakriveno dugme!
-                                        }
-                                    }
-                                }
-
-                                cJSON *duplicated_child = cJSON_Duplicate(target_element, 1);
-                                const char *c_tag = get_json_string(duplicated_child, "tag", "");
-                                const char *c_type = get_json_string(duplicated_child, "input_type", "");
-                                
-                                if (strcmp(c_tag, "input") == 0 || strcmp(c_tag, "button") == 0) {
-                                    if (strcmp(c_type, "hidden") != 0) {
-                                        // Odredi tačne dimenzije i aktiviraj vidljivost
-                                        int is_search = get_json_bool(duplicated_child, "is_search_input", 0) || strcmp(get_json_string(duplicated_child, "class_string", ""), "lst") == 0;
-                                        int w = is_search ? 280 : 130;
-                                        
-                                        set_json_number(duplicated_child, "x", current_inline_x);
-                                        set_json_number(duplicated_child, "y", cell_y + 4);
-                                        set_json_number(duplicated_child, "width", w);
-                                        set_json_number(duplicated_child, "height", 35);
-                                        set_json_bool(duplicated_child, "is_visible", 1);
-                                        set_json_bool(duplicated_child, "needs_layout", 0);
-                                        set_json_number(duplicated_child, "layout_calculated", 1);
-                                        
-                                        current_inline_x += w + 10; // Pomakni marginu za sledeće dugme
-                                    } else {
-                                        // Skrivena polja šaljemo na apsolutnu nulu da ne kvare layout
-                                        set_json_number(duplicated_child, "x", -99999);
-                                        set_json_number(duplicated_child, "y", -99999);
-                                        set_json_number(duplicated_child, "width", 0);
-                                        set_json_number(duplicated_child, "height", 0);
-                                        set_json_bool(duplicated_child, "is_visible", 0);
-                                    }
-                                } else {
-                                    set_json_number(duplicated_child, "x", cell_x);
-                                    set_json_number(duplicated_child, "y", cell_y);
-                                }
-                                
-                                cJSON_AddItemToArray(child_array, duplicated_child);
-                            }
-                            
-                            // Ažuriraj ukupnu širinu ćelije na osnovu stvarno poređanih inline elemenata
-                            if (current_inline_x - cell_x > computed_width) {
-                                computed_width = current_inline_x - cell_x + 10;
-                                set_json_number(flat_child, "width", computed_width);
-                            }
-                            
-                            cJSON_AddItemToObject(flat_child, "children", child_array);
-                        }
-
-                        cJSON_AddItemToArray(children_array, flat_child);
-                    }
-                }
-            }
-        }
-
-        
-        if (cJSON_GetArraySize(children_array) > 0) {
-            cJSON_AddItemToObject(elem_json, "children", children_array);
-        } else {
-            cJSON_Delete(children_array);
-        }
-        
-        // Postavi display na block (tabele su blok elementi)
         set_json_string(elem_json, "display", "block");
+
+     //   cJSON *rows = cJSON_GetObjectItem(table_data, "rows");
+     //  if (rows && cJSON_IsArray(rows)) {
+      //      cJSON_AddItemToObject(elem_json, "children", cJSON_Duplicate(rows, 1));
+      //  }
         
+        int final_parent_id = parent_json ? get_json_number(parent_json, "element_id", -1) : -1;
+        set_json_number(elem_json, "parent_id", final_parent_id);
+        
+        free(tag);
         return elem_json;
     } else {
-        // Fallback: ako novi parser ne radi, napravi praznu tabelu
         set_json_bool(elem_json, "is_table", 1);
         set_json_string(elem_json, "display", "block");
+        int final_parent_id = parent_json ? get_json_number(parent_json, "element_id", -1) : -1;
+        set_json_number(elem_json, "parent_id", final_parent_id);
+        free(tag);
         return elem_json;
     }
 }
@@ -2329,12 +2235,41 @@ if (strcasecmp(tag, "a") == 0) {
     // ===== COLLECT FULL TEXT FROM ALL CHILDREN =====
     char *full_text = get_element_text_recursive(elem);
     if (full_text && strlen(full_text) > 0) {
-        // Store the full text directly in the link element
         set_json_string(elem_json, "text", full_text);
         set_json_string(elem_json, "content", full_text);
         free(full_text);
     }
 }
+
+// 🚀 UNIVERZALNI SPREG ZA ROLE="BUTTON" (Rešava Google Apps div-ove i span-ove)
+// Izvlačimo sirovi "role" atribut iz Lexbor DOM elementa
+lxb_dom_attr_t *role_attr = lxb_dom_element_attr_by_name(elem, (lxb_char_t*)"role", 4);
+if (role_attr) {
+    size_t role_len;
+    const lxb_char_t *role_val = lxb_dom_attr_value(role_attr, &role_len);
+    if (role_val && role_len > 0) {
+        // Privremeno izvuci string iz Lexbor formata
+        char *role_str = malloc(role_len + 1);
+        memcpy(role_str, role_val, role_len);
+        role_str[role_len] = '\0';
+        
+        // Ako je u pitanju dugme, prisilno mu ubrizgaj is_button i is_clickable u cJSON!
+        if (strcasecmp(role_str, "button") == 0) {
+            set_json_bool(elem_json, "is_button", 1);
+            set_json_bool(elem_json, "is_clickable", 1);
+            
+            // Pošto je ovo div, moramo mu ručno izvući i tekstualni sadržaj dece da ima labelu
+            char *full_text = get_element_text_recursive(elem);
+            if (full_text && strlen(full_text) > 0) {
+                set_json_string(elem_json, "text", full_text);
+                set_json_string(elem_json, "content", full_text);
+                free(full_text);
+            }
+        }
+        free(role_str);
+    }
+}
+
 
     // ========== PROPAGATE MENU ORIENTATION FROM PARENT ==========
     if (parent_json) {
@@ -3036,6 +2971,15 @@ if (strcmp(role, "complementary") == 0) {
     if (strlen(current_place) == 0 || strcmp(current_place, "none") == 0) {
         set_json_string(elem_json, "sidebar_place", "right");  // complementary often right
     }
+}
+// 🚀 HIRURŠKI SPREG ZA GOOGLE APPS MENU:
+// Ako element ima ulogu dugmeta (role="button"), nalažemo sistemu da ga tretira kao stvarni button!
+else if (strcmp(role, "button") == 0) {
+    set_json_bool(elem_json, "is_button", 1);
+    set_json_bool(elem_json, "is_clickable", 1);
+    
+    // Opciono: dajemo mu izgled dugmeta ako drajver to zahteva
+    set_json_string(elem_json, "bg_color", "#f8f9fa");
 }
 
 if (strcmp(rule->property, "color") == 0) {
