@@ -931,27 +931,23 @@ void go_button_clicked(ui_pbutton_t *pbutton, void *arg) {
         char *novo_sklopljeni_url = NULL;
 
         switch (ruter_sajt_id) {
-            case 1:
-                // LISTA 1: Google i Yahoo MORAJU imati 'www.' ispred domena
+            case 1: // Google
+            case 3: // Yahoo
+            case 4: // Bing
+            case 7: // Mojeek
+                // LISTA 1, 3, 4, 7: Ovi domeni preferiraju 'www.' ispred domena
                 if (strncasecmp(temp_hostname, "www.", 4) != 0) {
-                    printf("⚙️ [UI Router] Google/Yahoo detektovan bez www. Pokrećem auto-upis...\n");
+                    printf("⚙️ [UI Router] Domen detektovan bez www. Dodajem poddomen...\n");
                     asprintf(&novo_sklopljeni_url, "%s://www.%s%s", protocol, temp_hostname, path_start);
                 }
                 break;
 
-            case 3:
-                // LISTA 3: DuckDuckGo NE SME imati 'www.' ispred domena radi ikonica
+            case 2: // DuckDuckGo
+            case 6: // DuckDuckGo Search
+                // LISTA 2, 6: DuckDuckGo NE SME imati 'www.' ispred domena radi ikonica
                 if (strncasecmp(temp_hostname, "www.", 4) == 0) {
                     printf("⚙️ [UI Router] DuckDuckGo detektovan sa www. Skidam višak radi učitavanja ikonica...\n");
                     asprintf(&novo_sklopljeni_url, "%s://%s%s", protocol, cisti_domen, path_start);
-                }
-                break;
-
-                case 4:
-                // LISTA 4 (Bing): Samo osiguravamo 'www.' na samom ulazu u UI
-                if (strncasecmp(temp_hostname, "www.", 4) != 0) {
-                    printf("⚙️ [UI Router] Bing detektovan bez www. Dodajem poddomen...\n");
-                    asprintf(&novo_sklopljeni_url, "%s://www.%s%s", protocol, temp_hostname, path_start);
                 }
                 break;
 
@@ -1040,43 +1036,15 @@ void go_button_clicked(ui_pbutton_t *pbutton, void *arg) {
         }
 
         
-        // Create TCP connection
-        inet_addr_t addr;
-        errno_t rc = resolve_host(hostname, &addr);
-        if (rc != EOK) {
-            char *msg = NULL;
-            asprintf(&msg, "Failed to resolve: %s", hostname);
-            if (msg) {
-                show_status_message(pauk_ui, msg, 3000);
-                free(msg);
-            } else {
-                show_status_message(pauk_ui, "Ne mogu da odredim Host", 3000);
-            }
-            pauk_ui->current_address = NULL;
-            free(url);
-            return;
-        }
-        
-        tcp_t *tcp = NULL;
-        tcp_conn_t *conn = NULL;
-        rc = create_tcp_connection(addr, port, &tcp, &conn);
-        if (rc != EOK) {
-            show_status_message(pauk_ui, "Konekcija pukla", 3000);
-            free(url);
-            return;
-        }
-        
         char *content = NULL;
         size_t content_size = 0;
+        errno_t rc;
         
         if (is_https) {
-            rc = fetch_https_content(url, conn, &content, &content_size, 0);
+            rc = fetch_https_content_keep_alive(url, &content, &content_size);
         } else {
-            rc = fetch_http_content(url, conn, &content, &content_size, 0);
+            rc = fetch_http_content_keep_alive(url, &content, &content_size);
         }
-        
-        tcp_conn_destroy(conn);
-        tcp_destroy(tcp);
         
         if (rc == EOK && content != NULL && content_size > 0) {
             // Save to temp file
