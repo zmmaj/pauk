@@ -16,8 +16,8 @@
 #include <time.h>
 
 #define LAYOUT_DEBUG 0
-#define INFO_MESSAGES 1
-#define INFO_MESSAGES_JS 1
+#define INFO_MESSAGES 0
+#define INFO_MESSAGES_JS 0
 #define KOPIRAJ 1
 
 #define HAVE_MBEDTLS 1
