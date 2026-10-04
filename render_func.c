@@ -1914,27 +1914,123 @@ if (strcmp(tag, "a") == 0) {
     return;
 }
 
-cJSON* find_parent_form(cJSON* root, cJSON* element) {
+
+static int element_je_unutar_kontejnera(cJSON *container, cJSON *target) {
+    if (!container || !target) return 0;
+    if (container == target) return 1;
+    
+    cJSON *children = cJSON_GetObjectItem(container, "children");
+    if (children && cJSON_IsArray(children)) {
+        cJSON *child;
+        cJSON_ArrayForEach(child, children) {
+            if (element_je_unutar_kontejnera(child, target)) return 1;
+        }
+    }
+    
+    cJSON *table_data = cJSON_GetObjectItem(container, "table_data");
+    if (table_data) {
+        if (element_je_unutar_kontejnera(table_data, target)) return 1;
+    }
+    
+    cJSON *rows = cJSON_GetObjectItem(container, "rows");
+    if (rows && cJSON_IsArray(rows)) {
+        cJSON *row;
+        cJSON_ArrayForEach(row, rows) {
+            if (element_je_unutar_kontejnera(row, target)) return 1;
+        }
+    }
+    
+    cJSON *cells = cJSON_GetObjectItem(container, "cells");
+    if (cells && cJSON_IsArray(cells)) {
+        cJSON *cell;
+        cJSON_ArrayForEach(cell, cells) {
+            if (element_je_unutar_kontejnera(cell, target)) return 1;
+        }
+    }
+    
+    return 0;
+}
+static cJSON* pronadji_formu_koja_sadrzi(cJSON *root, cJSON *element) {
     if (!root || !element) return NULL;
     
-    // Start from the current element's parent
-    int parent_id = get_json_number(element, "parent_id", -1);
-    
-    // Keep climbing up the tree until we find a form or reach the root
-    while (parent_id != -1) {
-        cJSON* parent = find_element_by_id(root, parent_id);
-        if (!parent) return NULL;
-        
-        // Check if this parent is a form
-        if (get_json_bool(parent, "is_form", 0)) {
-            return parent;
+    if (cJSON_IsArray(root)) {
+        cJSON *item;
+        cJSON_ArrayForEach(item, root) {
+            cJSON *found = pronadji_formu_koja_sadrzi(item, element);
+            if (found) return found;
         }
-        
-        // Move up to the next parent
-        parent_id = get_json_number(parent, "parent_id", -1);
+        return NULL;
+    }
+    
+    if (get_json_bool(root, "is_form", 0) || strcmp(get_json_string(root, "tag", ""), "form") == 0) {
+        if (element_je_unutar_kontejnera(root, element)) {
+            return root;
+        }
+    }
+    
+    cJSON *children = cJSON_GetObjectItem(root, "children");
+    if (children && cJSON_IsArray(children)) {
+        cJSON *child;
+        cJSON_ArrayForEach(child, children) {
+            cJSON *found = pronadji_formu_koja_sadrzi(child, element);
+            if (found) return found;
+        }
     }
     
     return NULL;
+}
+static cJSON* pronadji_prvu_formu(cJSON *root) {
+    if (!root) return NULL;
+    if (cJSON_IsArray(root)) {
+        cJSON *item;
+        cJSON_ArrayForEach(item, root) {
+            cJSON *f = pronadji_prvu_formu(item);
+            if (f) return f;
+        }
+        return NULL;
+    }
+    if (get_json_bool(root, "is_form", 0) || strcmp(get_json_string(root, "tag", ""), "form") == 0) {
+        return root;
+    }
+    cJSON *children = cJSON_GetObjectItem(root, "children");
+    if (children && cJSON_IsArray(children)) {
+        cJSON *child;
+        cJSON_ArrayForEach(child, children) {
+            cJSON *f = pronadji_prvu_formu(child);
+            if (f) return f;
+        }
+    }
+    return NULL;
+}
+cJSON* find_parent_form(cJSON* root, cJSON* element) {
+    if (!root || !element) return NULL;
+    
+    cJSON *form = pronadji_formu_koja_sadrzi(root, element);
+    if (form) return form;
+    
+    int parent_id = get_json_number(element, "parent_id", -1);
+    while (parent_id != -1) {
+        cJSON* parent = find_element_by_id(root, parent_id);
+        if (!parent) break;
+        if (get_json_bool(parent, "is_form", 0) || strcmp(get_json_string(parent, "tag", ""), "form") == 0) {
+            return parent;
+        }
+        parent_id = get_json_number(parent, "parent_id", -1);
+    }
+    
+    if (get_json_bool(element, "is_input", 0) || get_json_bool(element, "is_form_element", 0) || get_json_bool(element, "is_button", 0)) {
+        return pronadji_prvu_formu(root);
+    }
+    
+    return NULL;
+}
+
+cJSON* form = find_parent_form(pauk_ui->rendering_json, element);
+if (get_json_bool(element, "is_input", 0) || get_json_bool(element, "is_form_element", 0) || get_json_bool(element, "is_button", 0)) {
+    return pronadji_prvu_formu(root);
+}
+
+return NULL;
 }
 
 // Helper function to validate form
