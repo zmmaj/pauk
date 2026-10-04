@@ -768,7 +768,7 @@ if (children && cJSON_IsArray(children) && cJSON_GetArraySize(children) > 0) {
     
     // ✅ Ažuriraj i glavni ctx na kraju
     ctx->current_x = child_ctx.current_x;
-    ctx->current_y = child_ctx.current_y;
+   // ctx->current_y = child_ctx.current_y;
     if (child_ctx.line_height > ctx->line_height) {
         ctx->line_height = child_ctx.line_height;
     }
@@ -1580,11 +1580,10 @@ void racunaj_pozicije(cJSON *element,
     display = get_json_string(element, "display", "block");
     
     // =========================================================================
-    // 🚀 GEOMETRIJSKI ŠTIT: Skuplja ćelije tabele i sklanja skriveni otpad
+    // 🚀 GEOMETRIJSKI ŠTIT: Skuplja ćelije tabele
     // =========================================================================
-    if (strcmp(tag, "td") == 0 || strcmp(tag, "span") == 0) {
-        // Prisno menjamo display u inline-block da ćelije tabele i spanovi oko dugmadi
-        // ne bi lomili redove i gurali elemente naniže!
+    if (strcmp(tag, "td") == 0) {
+        // Ćelije tabele tretiramo kao inline-block
         display = "inline-block";
         set_json_string(element, "display", "inline-block");
     }
