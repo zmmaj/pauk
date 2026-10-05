@@ -53,7 +53,7 @@ static fibril_mutex_t g_pool_mutex;
 static fibril_mutex_t g_tls_handshake_mutex;
 
 extern CookieJar g_cookie_jar;
-
+ char g_request_cookie_header[4096];
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
 void srbinos_delay_1(unsigned int ms) {
@@ -1810,7 +1810,7 @@ errno_t fetch_https_content_keep_alive(const char *url,
         problematican_sajt_id = 7; // Mojeek
     }
 
-    char request[2048];
+    char request[16384];
 
     switch (problematican_sajt_id) {
         case 1: {
@@ -1819,6 +1819,7 @@ errno_t fetch_https_content_keep_alive(const char *url,
             snprintf(request, sizeof(request),
                 "GET %s HTTP/1.1\r\n"
                 "Host: %s\r\n"
+                "%s"
                 "User-Agent: %s\r\n"
                 "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
                 "Accept-Language: en-US,en;q=0.9,sr;q=0.5\r\n"
@@ -1826,7 +1827,7 @@ errno_t fetch_https_content_keep_alive(const char *url,
                 "Referer: https://google.com\r\n"
                 "Connection: keep-alive\r\n"
                 "\r\n",
-                path, hostname, ua);
+                path, hostname, g_request_cookie_header, ua);
             break;
         }
         case 2: {
@@ -1840,6 +1841,7 @@ errno_t fetch_https_content_keep_alive(const char *url,
             snprintf(request, sizeof(request),
                 "GET %s HTTP/1.1\r\n"
                 "Host: %s\r\n"
+                "%s"
                 "User-Agent: %s\r\n"
                 "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
                 "Accept-Language: en-US,en;q=0.9,sr;q=0.5\r\n"
@@ -1847,7 +1849,7 @@ errno_t fetch_https_content_keep_alive(const char *url,
                 "Referer: https://duckduckgo.com\r\n"
                 "Connection: keep-alive\r\n"
                 "\r\n",
-                path, goli_ddg, ua);
+                path, goli_ddg, g_request_cookie_header, ua);
             break;
         }
         case 3: {
@@ -1856,6 +1858,7 @@ errno_t fetch_https_content_keep_alive(const char *url,
             snprintf(request, sizeof(request),
                 "GET %s HTTP/1.1\r\n"
                 "Host: %s\r\n"
+                "%s"
                 "User-Agent: %s\r\n"
                 "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
                 "Accept-Language: en-US,en;q=0.9,sr;q=0.5\r\n"
@@ -1863,7 +1866,7 @@ errno_t fetch_https_content_keep_alive(const char *url,
                 "Referer: https://yahoo.com\r\n"
                 "Connection: keep-alive\r\n"
                 "\r\n",
-                path, hostname, ua);
+                path, hostname, g_request_cookie_header, ua);
             break;
         }
         case 4: {
@@ -1873,6 +1876,7 @@ errno_t fetch_https_content_keep_alive(const char *url,
             snprintf(request, sizeof(request),
                 "GET %s HTTP/1.1\r\n"
                 "Host: %s\r\n"
+                "%s"
                 "User-Agent: %s\r\n"
                 "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
                 "Accept-Language: en-US,en;q=0.9,sr;q=0.5\r\n"
@@ -1880,24 +1884,25 @@ errno_t fetch_https_content_keep_alive(const char *url,
                 "Referer: https://bing.com\r\n"
                 "Connection: keep-alive\r\n"
                 "\r\n",
-                path, bing_safe_host, ua);
+                path, bing_safe_host, g_request_cookie_header, ua);
             break;
         }
         case 5: {
             // Google Search Results
-            const char *ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+            const char *ua = "Pauk1.0.0rel.1 libwww-FM/2.14 SSL-MM/1.4.1";
             snprintf(request, sizeof(request),
                 "GET %s HTTP/1.1\r\n"
                 "Host: %s\r\n"
+                "%s"
                 "Connection: keep-alive\r\n"
                 "Upgrade-Insecure-Requests: 1\r\n"
                 "User-Agent: %s\r\n"
                 "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8\r\n"
                 "Accept-Language: en-US,en;q=0.9,sr;q=0.5\r\n"
-                "Accept-Encoding: gzip, deflate\r\n"
+                "Accept-Encoding: identity\r\n"
                 "Referer: https://www.google.com/\r\n"
                 "\r\n",
-                path, hostname, ua);
+                path, hostname, g_request_cookie_header, ua);
             break;
         }
         case 6: {
@@ -1906,6 +1911,7 @@ errno_t fetch_https_content_keep_alive(const char *url,
             snprintf(request, sizeof(request),
                 "GET %s HTTP/1.1\r\n"
                 "Host: %s\r\n"
+                "%s"
                 "User-Agent: %s\r\n"
                 "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
                 "Accept-Language: en-US,en;q=0.5\r\n"
@@ -1913,7 +1919,7 @@ errno_t fetch_https_content_keep_alive(const char *url,
                 "Referer: https://duckduckgo.com/\r\n"
                 "Connection: keep-alive\r\n"
                 "\r\n",
-                path, hostname, ua_desktop);
+                path, hostname, g_request_cookie_header, ua_desktop);
             break;
         }
         case 7: {
@@ -1922,6 +1928,7 @@ errno_t fetch_https_content_keep_alive(const char *url,
             snprintf(request, sizeof(request),
                 "GET %s HTTP/1.1\r\n"
                 "Host: %s\r\n"
+                "%s"
                 "User-Agent: %s\r\n"
                 "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8\r\n"
                 "Accept-Language: en-US,en;q=0.9\r\n"
@@ -1930,7 +1937,7 @@ errno_t fetch_https_content_keep_alive(const char *url,
                 "Referer: https://mojeek.com/\r\n"
                 "Connection: keep-alive\r\n"
                 "\r\n",
-                path, hostname, ua);
+                path, hostname, g_request_cookie_header, ua);
             break;
         }
         default: {
@@ -1938,6 +1945,7 @@ errno_t fetch_https_content_keep_alive(const char *url,
             snprintf(request, sizeof(request),
                 "GET %s HTTP/1.1\r\n"
                 "Host: %s\r\n"
+                "%s"
                 "User-Agent: %s\r\n"
                 "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8\r\n"
                 "Accept-Language: en-US,en;q=0.9\r\n"
@@ -1945,7 +1953,7 @@ errno_t fetch_https_content_keep_alive(const char *url,
                 "Referer: https://%s/\r\n"
                 "Connection: keep-alive\r\n"
                 "\r\n",
-                path, hostname, ua, hostname);
+                path, hostname, g_request_cookie_header, ua, hostname);
             break;
         }
     }
@@ -1982,6 +1990,11 @@ errno_t fetch_https_content_keep_alive(const char *url,
 
     uint64_t last_progress = get_uptime_ms();
     uint64_t download_start = last_progress;
+                              // ===== DODAJ OVDE: parse_set_cookie =====
+                              FILE *f_cookie_log = fopen("cookie.txt", "w");
+                              if (f_cookie_log) {
+                                  fprintf(f_cookie_log, "# Cookie log\n\n");
+                              }
 
     while (1) {
 
@@ -2029,6 +2042,31 @@ errno_t fetch_https_content_keep_alive(const char *url,
 
                         headers_processed = 1;
                         body_start = end;
+
+
+          char *set_cookie_ptr = buffer;
+          while ((set_cookie_ptr = strstr(set_cookie_ptr, "Set-Cookie:")) != NULL) {
+              if (set_cookie_ptr >= buffer + body_start) break;
+  
+              char *line_end = strstr(set_cookie_ptr, "\r\n");
+              if (line_end && line_end < buffer + body_start) {
+                  size_t line_len = line_end - set_cookie_ptr;
+                  char set_cookie_line[1024];
+                  if (line_len < sizeof(set_cookie_line)) {
+                      memcpy(set_cookie_line, set_cookie_ptr, line_len);
+                      set_cookie_line[line_len] = '\0';
+                      parse_set_cookie(set_cookie_line, &cookie_jar);
+               
+                      printf("🍪 [Cookie] Parsiran kolačić: %s\n", set_cookie_line);
+                      fprintf(f_cookie_log, "%s\n", set_cookie_line);
+                  }
+              }
+              set_cookie_ptr = line_end ? line_end + 2 : NULL;
+          }
+
+          // =========================================
+
+
 
                         char *cl =
                             extract_header_value(
@@ -2096,6 +2134,10 @@ errno_t fetch_https_content_keep_alive(const char *url,
             free(buffer);
             return rc;
         }
+    }
+    if (f_cookie_log) {
+        fclose(f_cookie_log);
+        kopiraj_fajl("cookie.txt");
     }
 
     if (!headers_processed || body_start >= total_size) {
