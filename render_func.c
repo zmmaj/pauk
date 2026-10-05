@@ -1604,6 +1604,116 @@ cJSON* find_element_at_position(cJSON* root, int x, int y) {
 
 
 
+static int element_je_unutar_kontejnera(cJSON *container, cJSON *target) {
+    if (!container || !target) return 0;
+    if (container == target) return 1;
+    
+    cJSON *children = cJSON_GetObjectItem(container, "children");
+    if (children && cJSON_IsArray(children)) {
+        cJSON *child;
+        cJSON_ArrayForEach(child, children) {
+            if (element_je_unutar_kontejnera(child, target)) return 1;
+        }
+    }
+    
+    cJSON *table_data = cJSON_GetObjectItem(container, "table_data");
+    if (table_data) {
+        if (element_je_unutar_kontejnera(table_data, target)) return 1;
+    }
+    
+    cJSON *rows = cJSON_GetObjectItem(container, "rows");
+    if (rows && cJSON_IsArray(rows)) {
+        cJSON *row;
+        cJSON_ArrayForEach(row, rows) {
+            if (element_je_unutar_kontejnera(row, target)) return 1;
+        }
+    }
+    
+    cJSON *cells = cJSON_GetObjectItem(container, "cells");
+    if (cells && cJSON_IsArray(cells)) {
+        cJSON *cell;
+        cJSON_ArrayForEach(cell, cells) {
+            if (element_je_unutar_kontejnera(cell, target)) return 1;
+        }
+    }
+    
+    return 0;
+}
+static cJSON* pronadji_formu_koja_sadrzi(cJSON *root, cJSON *element) {
+    if (!root || !element) return NULL;
+    
+    if (cJSON_IsArray(root)) {
+        cJSON *item;
+        cJSON_ArrayForEach(item, root) {
+            cJSON *found = pronadji_formu_koja_sadrzi(item, element);
+            if (found) return found;
+        }
+        return NULL;
+    }
+    
+    if (get_json_bool(root, "is_form", 0) || strcmp(get_json_string(root, "tag", ""), "form") == 0) {
+        if (element_je_unutar_kontejnera(root, element)) {
+            return root;
+        }
+    }
+    
+    cJSON *children = cJSON_GetObjectItem(root, "children");
+    if (children && cJSON_IsArray(children)) {
+        cJSON *child;
+        cJSON_ArrayForEach(child, children) {
+            cJSON *found = pronadji_formu_koja_sadrzi(child, element);
+            if (found) return found;
+        }
+    }
+    
+    return NULL;
+}
+static cJSON* pronadji_prvu_formu(cJSON *root) {
+    if (!root) return NULL;
+    if (cJSON_IsArray(root)) {
+        cJSON *item;
+        cJSON_ArrayForEach(item, root) {
+            cJSON *f = pronadji_prvu_formu(item);
+            if (f) return f;
+        }
+        return NULL;
+    }
+    if (get_json_bool(root, "is_form", 0) || strcmp(get_json_string(root, "tag", ""), "form") == 0) {
+        return root;
+    }
+    cJSON *children = cJSON_GetObjectItem(root, "children");
+    if (children && cJSON_IsArray(children)) {
+        cJSON *child;
+        cJSON_ArrayForEach(child, children) {
+            cJSON *f = pronadji_prvu_formu(child);
+            if (f) return f;
+        }
+    }
+    return NULL;
+}
+cJSON* find_parent_form(cJSON* root, cJSON* element) {
+    if (!root || !element) return NULL;
+    
+    cJSON *form = pronadji_formu_koja_sadrzi(root, element);
+    if (form) return form;
+    
+    int parent_id = get_json_number(element, "parent_id", -1);
+    while (parent_id != -1) {
+        cJSON* parent = find_element_by_id(root, parent_id);
+        if (!parent) break;
+        if (get_json_bool(parent, "is_form", 0) || strcmp(get_json_string(parent, "tag", ""), "form") == 0) {
+            return parent;
+        }
+        parent_id = get_json_number(parent, "parent_id", -1);
+    }
+    
+    if (get_json_bool(element, "is_input", 0) || get_json_bool(element, "is_form_element", 0) || get_json_bool(element, "is_button", 0)) {
+        return pronadji_prvu_formu(root);
+    }
+    
+    return NULL;
+}
+
 void handle_element_click(pauk_ui_t* pauk_ui, cJSON* element, int button) {
     if (!element) return;
     
@@ -1864,46 +1974,20 @@ if (strcmp(tag, "a") == 0) {
     
 
     
-    // ===== NO JS HANDLER - PROCESS C FORM HANDLING =====
-    // Get button's parent_id
-    int parent_id = get_json_number(element, "parent_id", -1);
-    
-    // Try to find parent directly
-    cJSON* direct_parent = find_element_by_id(pauk_ui->rendering_json, parent_id);
-    if (direct_parent) {
-        const char* parent_tag = get_json_string(direct_parent, "tag", "unknown");
-        int is_form = get_json_bool(direct_parent, "is_form", 0);
-        printf("Direct parent: tag=%s, is_form=%d\n", parent_tag, is_form);
-    } else {
-        printf("Direct parent NOT found for ID %d\n", parent_id);
-    }
-    
-    // Climb up to find form
-    cJSON* form = NULL;
-    int current_id = parent_id;
-    
-    for (int i = 0; i < 4 && current_id != -1; i++) {
-        printf("Level %d: looking for ID %d\n", i, current_id);
-        cJSON* parent = find_element_by_id(pauk_ui->rendering_json, current_id);
-        if (!parent) break;
-        
-        if (get_json_bool(parent, "is_form", 0)) {
-            form = parent;
-            break;
-        }
-        current_id = get_json_number(parent, "parent_id", -1);
-    }
-    
-    if (form) {
-        const char* button_type = get_json_string(element, "button_type", "button");
-        if (strcmp(button_type, "submit") == 0) {
-            printf("✅ Submitting form!\n");
-            submit_form(pauk_ui, form);
-        }
-    } else {
-        printf("No form found\n");
-    }
-}
+     // ===== NO JS HANDLER - PROCESS C FORM HANDLING =====
+     cJSON *form = find_parent_form(pauk_ui->rendering_json, element);
+
+     if (form) {
+         const char *button_type = get_json_string(element, "button_type", "button");
+         const char *input_type = get_json_string(element, "input_type", "");
+ 
+         if (strcmp(button_type, "submit") == 0 ||
+             strcmp(input_type, "submit") == 0 ||
+             get_json_bool(element, "is_button", 0)) {
+             submit_form(pauk_ui, form);
+         }
+     }
+ }
     
     // Force full screen update for links/buttons
     pixelmap_to_bitmap_copy(pauk_ui);
@@ -1912,125 +1996,6 @@ if (strcmp(tag, "a") == 0) {
     gfx_update(pauk_ui->gc);
     
     return;
-}
-
-
-static int element_je_unutar_kontejnera(cJSON *container, cJSON *target) {
-    if (!container || !target) return 0;
-    if (container == target) return 1;
-    
-    cJSON *children = cJSON_GetObjectItem(container, "children");
-    if (children && cJSON_IsArray(children)) {
-        cJSON *child;
-        cJSON_ArrayForEach(child, children) {
-            if (element_je_unutar_kontejnera(child, target)) return 1;
-        }
-    }
-    
-    cJSON *table_data = cJSON_GetObjectItem(container, "table_data");
-    if (table_data) {
-        if (element_je_unutar_kontejnera(table_data, target)) return 1;
-    }
-    
-    cJSON *rows = cJSON_GetObjectItem(container, "rows");
-    if (rows && cJSON_IsArray(rows)) {
-        cJSON *row;
-        cJSON_ArrayForEach(row, rows) {
-            if (element_je_unutar_kontejnera(row, target)) return 1;
-        }
-    }
-    
-    cJSON *cells = cJSON_GetObjectItem(container, "cells");
-    if (cells && cJSON_IsArray(cells)) {
-        cJSON *cell;
-        cJSON_ArrayForEach(cell, cells) {
-            if (element_je_unutar_kontejnera(cell, target)) return 1;
-        }
-    }
-    
-    return 0;
-}
-static cJSON* pronadji_formu_koja_sadrzi(cJSON *root, cJSON *element) {
-    if (!root || !element) return NULL;
-    
-    if (cJSON_IsArray(root)) {
-        cJSON *item;
-        cJSON_ArrayForEach(item, root) {
-            cJSON *found = pronadji_formu_koja_sadrzi(item, element);
-            if (found) return found;
-        }
-        return NULL;
-    }
-    
-    if (get_json_bool(root, "is_form", 0) || strcmp(get_json_string(root, "tag", ""), "form") == 0) {
-        if (element_je_unutar_kontejnera(root, element)) {
-            return root;
-        }
-    }
-    
-    cJSON *children = cJSON_GetObjectItem(root, "children");
-    if (children && cJSON_IsArray(children)) {
-        cJSON *child;
-        cJSON_ArrayForEach(child, children) {
-            cJSON *found = pronadji_formu_koja_sadrzi(child, element);
-            if (found) return found;
-        }
-    }
-    
-    return NULL;
-}
-static cJSON* pronadji_prvu_formu(cJSON *root) {
-    if (!root) return NULL;
-    if (cJSON_IsArray(root)) {
-        cJSON *item;
-        cJSON_ArrayForEach(item, root) {
-            cJSON *f = pronadji_prvu_formu(item);
-            if (f) return f;
-        }
-        return NULL;
-    }
-    if (get_json_bool(root, "is_form", 0) || strcmp(get_json_string(root, "tag", ""), "form") == 0) {
-        return root;
-    }
-    cJSON *children = cJSON_GetObjectItem(root, "children");
-    if (children && cJSON_IsArray(children)) {
-        cJSON *child;
-        cJSON_ArrayForEach(child, children) {
-            cJSON *f = pronadji_prvu_formu(child);
-            if (f) return f;
-        }
-    }
-    return NULL;
-}
-cJSON* find_parent_form(cJSON* root, cJSON* element) {
-    if (!root || !element) return NULL;
-    
-    cJSON *form = pronadji_formu_koja_sadrzi(root, element);
-    if (form) return form;
-    
-    int parent_id = get_json_number(element, "parent_id", -1);
-    while (parent_id != -1) {
-        cJSON* parent = find_element_by_id(root, parent_id);
-        if (!parent) break;
-        if (get_json_bool(parent, "is_form", 0) || strcmp(get_json_string(parent, "tag", ""), "form") == 0) {
-            return parent;
-        }
-        parent_id = get_json_number(parent, "parent_id", -1);
-    }
-    
-    if (get_json_bool(element, "is_input", 0) || get_json_bool(element, "is_form_element", 0) || get_json_bool(element, "is_button", 0)) {
-        return pronadji_prvu_formu(root);
-    }
-    
-    return NULL;
-}
-
-cJSON* form = find_parent_form(pauk_ui->rendering_json, element);
-if (get_json_bool(element, "is_input", 0) || get_json_bool(element, "is_form_element", 0) || get_json_bool(element, "is_button", 0)) {
-    return pronadji_prvu_formu(root);
-}
-
-return NULL;
 }
 
 // Helper function to validate form
