@@ -594,6 +594,9 @@ void layout_inline_element(cJSON *element, LayoutContext *ctx) {
     // 🚀 QUICK CHECK: If hidden, zero out immediately
     const char *display = get_json_string(element, "display", "inline");
     const char *input_type = get_json_string(element, "input_type", "");
+
+
+
     if (strcmp(display, "none") == 0 || strcmp(input_type, "hidden") == 0) {
         set_json_number(element, "width", 0);
         set_json_number(element, "height", 0);
@@ -605,6 +608,23 @@ void layout_inline_element(cJSON *element, LayoutContext *ctx) {
     const char *tag = get_json_string(element, "tag", "");
     input_type = get_json_string(element, "input_type", "");
     
+
+// ===== <br> - POSEBNI TRETMAN =====
+if (strcmp(tag, "br") == 0) {
+    int font_size = DEFAULT_FONT_SIZE;
+    if (ctx->parent_element) {
+        cJSON *fs_item = cJSON_GetObjectItem(ctx->parent_element, "font_size");
+        if (fs_item && cJSON_IsNumber(fs_item)) {
+            font_size = fs_item->valueint;
+        }
+    }
+    ctx->current_y += font_size + 4;
+    ctx->current_x = ctx->parent_x;
+    ctx->line_height = 0;
+    return;
+}
+// ==================================
+
     int is_link = (strcmp(tag, "a") == 0);
     int is_button = get_json_bool(element, "is_button", 0) || 
                     (strcmp(tag, "input") == 0 && (strcmp(input_type, "submit") == 0 || strcmp(input_type, "button") == 0));
@@ -752,23 +772,23 @@ if (children && cJSON_IsArray(children) && cJSON_GetArraySize(children) > 0) {
     
     cJSON *child;
     cJSON_ArrayForEach(child, children) {
-        const char *child_tag = get_json_string(child, "tag", "");
-        
-        // Preskoči text node-ove - oni nemaju layout
-        if (strcmp(child_tag, "text") == 0) continue;
-        
-        const char *child_display = get_json_string(child, "display", "inline");
-        
-        if (strcmp(child_display, "block") == 0) {
-            layout_block_element(child, &child_ctx);
-        } else {
-            layout_inline_element(child, &child_ctx);  // ← Ovde se child_ctx ažurira!
-        }
+    const char *child_tag = get_json_string(child, "tag", "");
+    
+    // Preskoči text node-ove
+    if (strcmp(child_tag, "text") == 0) continue;
+    
+    const char *child_display = get_json_string(child, "display", "inline");
+    
+    if (strcmp(child_display, "block") == 0) {
+        layout_block_element(child, &child_ctx);
+    } else {
+        layout_inline_element(child, &child_ctx);
     }
+}
     
     // ✅ Ažuriraj i glavni ctx na kraju
     ctx->current_x = child_ctx.current_x;
-   // ctx->current_y = child_ctx.current_y;
+   //ctx->current_y = child_ctx.current_y; 
     if (child_ctx.line_height > ctx->line_height) {
         ctx->line_height = child_ctx.line_height;
     }
@@ -926,8 +946,8 @@ void layout_text_node(cJSON *element, LayoutContext *ctx) {
         ctx->current_x = x + available_content_width + margin_right;
         ctx->current_y = y + total_height;
         if (total_height > ctx->line_height) ctx->line_height = total_height;
-        
-        free(current_line);
+     
+            free(current_line);
         free(lines);
         free(text_copy);
  
@@ -946,7 +966,6 @@ void layout_text_node(cJSON *element, LayoutContext *ctx) {
         ctx->current_x = x + single_line_width + margin_right;
         ctx->current_y += text_height;
         if (text_height > ctx->line_height) ctx->line_height = text_height;
-
     }
     
 }
@@ -1072,7 +1091,6 @@ int has_ancestor_with_class(cJSON *elem, const char *target_class) {
 cJSON* find_element_by_id(cJSON *root, int target_id) {
     if (!root) return NULL;
     
-    // If root is an array, search each item
     if (cJSON_IsArray(root)) {
         cJSON *item;
         cJSON_ArrayForEach(item, root) {
@@ -1082,16 +1100,38 @@ cJSON* find_element_by_id(cJSON *root, int target_id) {
         return NULL;
     }
     
-    // Check if this element has the target ID
     int id = get_json_number(root, "element_id", -1);
     if (id == target_id) return root;
     
-    // Check children recursively
     cJSON *children = cJSON_GetObjectItem(root, "children");
     if (children && cJSON_IsArray(children)) {
         cJSON *child;
         cJSON_ArrayForEach(child, children) {
             cJSON *found = find_element_by_id(child, target_id);
+            if (found) return found;
+        }
+    }
+    
+    cJSON *table_data = cJSON_GetObjectItem(root, "table_data");
+    if (table_data) {
+        cJSON *found = find_element_by_id(table_data, target_id);
+        if (found) return found;
+    }
+    
+    cJSON *rows = cJSON_GetObjectItem(root, "rows");
+    if (rows && cJSON_IsArray(rows)) {
+        cJSON *row;
+        cJSON_ArrayForEach(row, rows) {
+            cJSON *found = find_element_by_id(row, target_id);
+            if (found) return found;
+        }
+    }
+    
+    cJSON *cells = cJSON_GetObjectItem(root, "cells");
+    if (cells && cJSON_IsArray(cells)) {
+        cJSON *cell;
+        cJSON_ArrayForEach(cell, cells) {
+            cJSON *found = find_element_by_id(cell, target_id);
             if (found) return found;
         }
     }
